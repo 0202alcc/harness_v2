@@ -1,0 +1,10 @@
+{
+  "chat_id": "{{chat_id}}",
+  "created_at": "{{created_at}}",
+  "last_updated": "{{last_updated}}",
+  "system_prompt": null,
+  "session_metadata": {
+    "language": "{{session_metadata.language}}",
+    "timezone": "{{session_metadata.timezone}}"
+  }
+}

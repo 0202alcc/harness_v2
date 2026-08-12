@@ -4,9 +4,9 @@ from fastapi.templating import Jinja2Templates
 
 
 app = FastAPI()
-
-# Setup template directory
 templates = Jinja2Templates(directory="templates")
+
+CHAT_ID = None  # Global variable to store the chat ID
 
 # GET route
 @app.get("/", response_class=HTMLResponse)
@@ -35,7 +35,9 @@ async def handle_form(
         }
     )
 
-def run_server():
+def run_server(chat_id=None):
+    global CURRENT_CHAT_DATA
+    
     import uvicorn
     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
 

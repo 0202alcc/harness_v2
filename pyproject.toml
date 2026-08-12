@@ -10,6 +10,8 @@ dependencies = [
     "jinja2>=3.1.6",
     "logging>=0.4.9.6",
     "python-multipart>=0.0.32",
+    "tzdata>=2026.3",
+    "tzlocal>=5.4.4",
     "uuid>=1.30",
     "uvicorn>=0.52.1",
 ]

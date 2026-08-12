@@ -30,7 +30,7 @@ async def handle_form(
         context={
             "field1": field1, 
             "field2": field2, 
-            "message": result_message
+            "reply": result_message
         }
     )
 

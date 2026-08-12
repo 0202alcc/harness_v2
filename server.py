@@ -19,17 +19,17 @@ async def read_form(request: Request):
 @app.post("/send", response_class=HTMLResponse)
 async def handle_form(
     request: Request, 
-    field1: str = Form(...), 
-    field2: str = Form(...)
+    system_prompt: str = Form(...), 
+    message: str = Form(...)
 ):
-    result_message = f"Received Field 1: '{field1}' and Field 2: '{field2}'"
+    result_message = f"Received System Prompt: '{system_prompt}' and Message: '{message}'"
     
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-            "field1": field1, 
-            "field2": field2, 
+            "system_prompt": system_prompt, 
+            "message": message, 
             "reply": result_message
         }
     )

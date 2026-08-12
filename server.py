@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+
 app = FastAPI()
 
 # Setup template directory
@@ -34,6 +35,9 @@ async def handle_form(
         }
     )
 
-if __name__ == "__main__":
+def run_server():
     import uvicorn
     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
+
+if __name__ == "__main__":
+    run_server()

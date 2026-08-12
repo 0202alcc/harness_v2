@@ -40,9 +40,6 @@ async def handle_form(
 ):
     chat_id = STATE["chat_id"]
     chat_data = fetch_chat_data(chat_id) if chat_id else None
-    result_message = (
-        f"Received System Prompt: '{system_prompt}' and Message: '{message}'"
-    )
 
     # Ensure chat_data is a dictionary before performing lookup
     if isinstance(chat_data, dict):
@@ -54,6 +51,13 @@ async def handle_form(
             with open(chat_data_file, "w") as f:
                 json.dump(chat_data, f, indent=2)
             logging.info(f"Updated system prompt for chat ID {chat_id}")
+
+    result_message = (
+            f"Received System Prompt: '{system_prompt}' and Message: '{message}'"
+        )
+
+    # send message through the langchain pipeline and get the result
+    
 
     return templates.TemplateResponse(
         request=request,

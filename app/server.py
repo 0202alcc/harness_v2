@@ -19,6 +19,22 @@ templates = Jinja2Templates(
     directory="./app/templates"
 )
 
+# ---------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------
+def render_chat_messages(
+    chat_data: dict,
+) -> dict:
+    for msg in chat_data.get("messages", []):
+        msg["rendered_content"] = markdown.markdown(
+            msg["content"],
+            extensions=[
+                "fenced_code",
+                "tables",
+            ],
+        )
+
+    return chat_data
 
 def create_app(
     *,
@@ -78,14 +94,7 @@ def create_app(
             user_id=user_id,
         )
 
-        for msg in chat_data["messages"]:
-            msg["rendered_content"] = markdown.markdown(
-                msg["content"],
-                extensions=[
-                    "fenced_code",
-                    "tables",
-                ],
-            )
+        chat_data = render_chat_messages(chat_data)
 
         return templates.TemplateResponse(
             request=request,
@@ -105,36 +114,17 @@ def create_app(
         system_prompt: str = Form(...),
         message: str = Form(...),
     ):
-        # -----------------------------------------------------
-        # Update persistent system prompt if necessary
-        # -----------------------------------------------------
-
         chat_data = store.get_chat(
             chat_id=chat_id,
             user_id=user_id,
         )
 
-        if (
-            chat_data.get("system_prompt")
-            != system_prompt
-        ):
-            chat_data = store.update_system_prompt(
+        if chat_data.get("system_prompt") != system_prompt:
+            store.update_system_prompt(
                 chat_id=chat_id,
                 user_id=user_id,
                 system_prompt=system_prompt,
             )
-
-        for msg in chat_data["messages"]:
-            msg["rendered_content"] = markdown.markdown(
-                msg["content"],
-                extensions=[
-                    "fenced_code",
-                    "tables",
-                ],
-            )
-        # -----------------------------------------------------
-        # Persist incoming user message
-        # -----------------------------------------------------
 
         user_message = store.append_message(
             chat_id=chat_id,
@@ -144,13 +134,6 @@ def create_app(
         )
 
         turn_id = user_message["turn_id"]
-
-        # -----------------------------------------------------
-        # Run Harness
-        #
-        # For now this only performs your chunking pipeline.
-        # Later this becomes harness.handle_message(...)
-        # -----------------------------------------------------
 
         chunk_result = await run_in_threadpool(
             harness.chunk_message,
@@ -166,21 +149,19 @@ def create_app(
             len(chunk_result["chunks"]),
         )
 
-        # -----------------------------------------------------
-        # Temporary V1 response
-        # -----------------------------------------------------
-
         result_message = (
             f"Message received and split into "
             f"{len(chunk_result['chunks'])} chunk(s) "
             f"({chunk_result['total_tokens']} tokens)."
         )
 
-        # Refresh state because the user message has now been
-        # persisted.
         chat_data = store.get_chat(
             chat_id=chat_id,
             user_id=user_id,
+        )
+
+        chat_data = render_chat_messages(
+            chat_data
         )
 
         return templates.TemplateResponse(
@@ -188,14 +169,12 @@ def create_app(
             name="index.html",
             context={
                 "request": request,
-                "system_prompt": system_prompt,
-                "message": message,
                 "reply": result_message,
                 "chat_data": chat_data,
             },
         )
-
     return app
+
 
 
 def run_server(

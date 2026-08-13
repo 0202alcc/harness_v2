@@ -1,9 +1,13 @@
-from __future__ import annotations
-from LLManager import LLManager
-from storage import ChatStorage
-from typing import TypedDict
+# Harness/chunker.py
 
-CHUNK_SIZE = 512
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import TypedDict
+from LLManager import LLManager
+
+
+DEFAULT_CHUNK_SIZE = 512
 
 
 class Chunk(TypedDict):
@@ -15,60 +19,62 @@ class Chunk(TypedDict):
     text: str
 
 
-class Harness:
+class ChunkResult(TypedDict):
+    input_text: str
+    model: str
+    total_tokens: int
+    chunks: list[Chunk]
+
+
+class Chunker(ABC):
     """
-    Main Harness state machine.
+    Interface for Harness chunking strategies.
+    """
 
-    The Harness coordinates:
-        - chat state
-        - tokenization/chunking
-        - future LangGraph reasoning pipeline
-        - LLM operations
+    @abstractmethod
+    def chunk(
+        self,
+        text: str,
+    ) -> ChunkResult:
+        raise NotImplementedError
 
-    It does not directly access llama.cpp HTTP endpoints or storage files.
+
+class FixedTokenChunker(Chunker):
+    """
+    Splits text into fixed-size model-token chunks.
+
+    V1 policy:
+        - tokenizer: current llama.cpp model tokenizer
+        - chunk size: 512 source tokens
+        - overlap: 0
+        - semantic boundary adjustment: none
     """
 
     def __init__(
         self,
         *,
         llm: LLManager,
-        store: ChatStorage,
         model: str,
-        user_id: str,
-        chat_id: str,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ):
-        self.llm = llm
-        self.store = store
-
-        self.model = model
-        self.user_id = user_id
-        self.chat_id = chat_id
-
-    def get_chat_state(self) -> dict:
-        """
-        Fetch the current authoritative state of this chat.
-        """
-        return self.store.get_chat(
-            chat_id=self.chat_id,
-            user_id=self.user_id,
-        )
-
-    def chunk_message(
-        self,
-        text: str,
-        chunk_size: int = CHUNK_SIZE,
-    ) -> dict:
-        """
-        Tokenize a user message with the current model's tokenizer
-        and split it into fixed-size source-token chunks.
-        """
-
         if chunk_size <= 0:
             raise ValueError(
                 "chunk_size must be greater than zero"
             )
 
-        # Use llama.cpp's actual tokenizer.
+        self.llm = llm
+        self.model = model
+        self.chunk_size = chunk_size
+
+    def chunk(
+        self,
+        text: str,
+    ) -> ChunkResult:
+        """
+        Tokenize text with the active model tokenizer and split
+        it into non-overlapping fixed-size chunks.
+        """
+
         token_ids = self.llm.tokenize(
             text,
             model=self.model,
@@ -80,10 +86,10 @@ class Harness:
         for start in range(
             0,
             len(token_ids),
-            chunk_size,
+            self.chunk_size,
         ):
             end = min(
-                start + chunk_size,
+                start + self.chunk_size,
                 len(token_ids),
             )
 
@@ -99,9 +105,7 @@ class Harness:
                     "index": len(chunks),
                     "token_start": start,
                     "token_end": end,
-                    "token_count": len(
-                        chunk_token_ids
-                    ),
+                    "token_count": len(chunk_token_ids),
                     "token_ids": chunk_token_ids,
                     "text": chunk_text,
                 }

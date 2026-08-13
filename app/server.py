@@ -1,171 +1,235 @@
-import datetime
-import sys
-from fastapi import FastAPI, Request, Form
+# app/server.py
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI, Form, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+
 from Harness import Harness
-import json
-import logging
-import os
+from LLManager import LLManager
+import markdown
+from storage import ChatStorage
 
 
-with open("config.json", "r") as f:
-    config = json.load(f)
-STATE = config.get("STATE", {"chat_id": None, "user_id": None, "model": None})
-PATH_TO_LOGS = config.get("PATH", {}).get("logs", "./.logs/")
-PATH_TO_CHAT_JSON_TEMPLATE = config.get("PATH", {}).get("json_template", "./app/templates/chat_json_template.json")
-# Ensure logs directory exists
-os.makedirs(PATH_TO_LOGS, exist_ok=True)
+templates = Jinja2Templates(
+    directory="./app/templates"
+)
 
-chat = FastAPI()
-templates = Jinja2Templates(directory="./app/templates")
-@chat.get("/", response_class=HTMLResponse)
-async def read_form(request: Request):
-    chat_id = STATE["chat_id"]
-    user_id = STATE["user_id"]
-    
-    if not chat_id or not user_id:
-        return HTMLResponse(content="Missing chat_id or user_id in state", status_code=400)
-        
-    print(f"Handling GET request for chat ID: {chat_id}, User ID: {user_id}")
 
-    chat_data = fetch_chat_data(chat_id, user_id) if chat_id else None
+def create_app(
+    *,
+    chat_id: str,
+    user_id: str,
+    model: str,
+    llm: LLManager,
+    store: ChatStorage,
+) -> FastAPI:
+    """
+    Construct the FastAPI application and inject the application's
+    runtime dependencies.
 
-    # Context MUST be a dict containing "request"
-    return templates.TemplateResponse(
-        request=request, 
-        name="index.html",
-        context={"request": request, "chat_data": chat_data}
+    server.py is responsible only for the web interface. It does not
+    perform direct filesystem access or direct llama.cpp access.
+    """
+
+    app = FastAPI()
+
+    # ---------------------------------------------------------
+    # Construct session Harness
+    # ---------------------------------------------------------
+
+    harness = Harness(
+        llm=llm,
+        store=store,
+        model=model,
+        user_id=user_id,
+        chat_id=chat_id,
     )
 
+    # ---------------------------------------------------------
+    # Application state
+    # ---------------------------------------------------------
 
-@chat.post("/send", response_class=HTMLResponse)
-async def handle_form(
-    request: Request, system_prompt: str = Form(...), message: str = Form(...)
-):
-    chat_id = STATE["chat_id"]
-    user_id = STATE["user_id"]
+    app.state.chat_id = chat_id
+    app.state.user_id = user_id
+    app.state.model = model
 
-    if not chat_id or not user_id:
-        return HTMLResponse(content="Missing chat_id or user_id in state", status_code=400)
+    app.state.llm = llm
+    app.state.store = store
+    app.state.harness = harness
 
-    chat_data = fetch_chat_data(chat_id, user_id) if chat_id else None
+    # ---------------------------------------------------------
+    # Routes
+    # ---------------------------------------------------------
 
-    # Ensure chat_data is a dictionary before performing lookup
-    if isinstance(chat_data, dict):
-        if chat_data.get("system_prompt") != system_prompt:
-            chat_data["system_prompt"] = system_prompt
-            chat_data["last_updated"] = datetime.datetime.now().isoformat()
-
-            chat_data_file = get_chat_file_path(user_id, chat_id)
-            with open(chat_data_file, "w") as f:
-                json.dump(chat_data, f, indent=2)
-            logging.info(f"Updated system prompt for chat ID {chat_id}")
-
-    result_message = (
-            f"Received System Prompt: '{system_prompt}' and Message: '{message}'"
-        )
-
-    # send message through the langchain pipeline and get the result
-    harness = Harness(model=STATE["model"], user_id=user_id, chat_id=chat_id, chat_json=chat_data)
-    chunk_result = await run_in_threadpool(harness.chunk_message, message)
-    print(
-        f"[Harness] tokenizer={chunk_result['tokenizer']} "
-        f"total_tokens={chunk_result['total_tokens']} "
-        f"chunks={len(chunk_result['chunks'])}",
-        file=sys.stderr,
+    @app.get(
+        "/",
+        response_class=HTMLResponse,
     )
-    
-
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={
-            "request": request,
-            "system_prompt": system_prompt,
-            "message": message,
-            "reply": result_message,
-            "chat_data": chat_data,
-        },
-    )
-
-def get_chat_file_path(user_id, chat_id):
-    user_dir = os.path.join(PATH_TO_LOGS, str(user_id))
-    os.makedirs(user_dir, exist_ok=True)
-    return os.path.join(user_dir, f"{chat_id}.json")
-
-def fetch_chat_data(chat_id, user_id):
-    if not chat_id or not user_id:
-        return None
-    chat_data_file = get_chat_file_path(user_id, chat_id)
-
-    if os.path.exists(chat_data_file):
-        try:
-            with open(chat_data_file, "r") as f:
-                data = json.load(f)
-                # If for any reason the file contains double-serialized JSON string, parse it
-                if isinstance(data, str):
-                    data = json.loads(data)
-                return data
-        except (json.JSONDecodeError, TypeError):
-            logging.error(f"Chat data for {chat_id} is corrupt. Recreating.")
-
-    return generate_new_chat_data(chat_id, user_id)
-
-def generate_new_chat_data(chat_id, user_id):
-    try:
-        with open(PATH_TO_CHAT_JSON_TEMPLATE, "r") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        logging.error(f"Template not found at {PATH_TO_CHAT_JSON_TEMPLATE}.")
-        return {}
-
-    now_iso = datetime.datetime.now().isoformat()
-
-    data["chat_id"] = str(chat_id)
-    data["user_id"] = str(user_id)
-    data["created_at"] = now_iso
-    data["last_updated"] = now_iso
-
-    if "session_metadata" in data and isinstance(
-        data["session_metadata"], dict
+    async def read_form(
+        request: Request,
     ):
-        data["session_metadata"]["language"] = "en"
-        data["session_metadata"]["timezone"] = str(
-            datetime.datetime.now().astimezone().tzinfo
+        chat_data = store.get_chat(
+            chat_id=chat_id,
+            user_id=user_id,
         )
 
-    chat_data_file = get_chat_file_path(user_id, chat_id)
-    try:
-        with open(chat_data_file, "w") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        logging.error(f"Error saving chat data: {e}")
+        for msg in chat_data["messages"]:
+            msg["rendered_content"] = markdown.markdown(
+                msg["content"],
+                extensions=[
+                    "fenced_code",
+                    "tables",
+                ],
+            )
 
-    return data
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={
+                "request": request,
+                "chat_data": chat_data,
+            },
+        )
 
-
-def run_server(chat_id=None, user_id=None, model=None):
-    STATE["chat_id"] = chat_id
-    STATE["user_id"] = user_id
-    STATE["model"] = model
-    logging.info(
-        f"Starting server with chat ID: {STATE['chat_id']}, "
-        f"User ID: {STATE['user_id']}, Model: {STATE['model']}"
+    @app.post(
+        "/send",
+        response_class=HTMLResponse,
     )
+    async def handle_form(
+        request: Request,
+        system_prompt: str = Form(...),
+        message: str = Form(...),
+    ):
+        # -----------------------------------------------------
+        # Update persistent system prompt if necessary
+        # -----------------------------------------------------
 
-    if model:
-        try:
-            Harness(model=model, user_id=user_id or "warmup")._get_tokenizer()
-            logging.info("Tokenizer warmed for model %s", model)
-        except Exception as exc:
-            logging.warning("Tokenizer warmup failed for %s: %s", model, exc)
+        chat_data = store.get_chat(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+
+        if (
+            chat_data.get("system_prompt")
+            != system_prompt
+        ):
+            chat_data = store.update_system_prompt(
+                chat_id=chat_id,
+                user_id=user_id,
+                system_prompt=system_prompt,
+            )
+
+        for msg in chat_data["messages"]:
+            msg["rendered_content"] = markdown.markdown(
+                msg["content"],
+                extensions=[
+                    "fenced_code",
+                    "tables",
+                ],
+            )
+        # -----------------------------------------------------
+        # Persist incoming user message
+        # -----------------------------------------------------
+
+        user_message = store.append_message(
+            chat_id=chat_id,
+            user_id=user_id,
+            role="user",
+            content=message,
+        )
+
+        turn_id = user_message["turn_id"]
+
+        # -----------------------------------------------------
+        # Run Harness
+        #
+        # For now this only performs your chunking pipeline.
+        # Later this becomes harness.handle_message(...)
+        # -----------------------------------------------------
+
+        chunk_result = await run_in_threadpool(
+            harness.chunk_message,
+            message,
+        )
+
+        logging.info(
+            "Chunked user message: "
+            "chat_id=%s turn_id=%s tokens=%d chunks=%d",
+            chat_id,
+            turn_id,
+            chunk_result["total_tokens"],
+            len(chunk_result["chunks"]),
+        )
+
+        # -----------------------------------------------------
+        # Temporary V1 response
+        # -----------------------------------------------------
+
+        result_message = (
+            f"Message received and split into "
+            f"{len(chunk_result['chunks'])} chunk(s) "
+            f"({chunk_result['total_tokens']} tokens)."
+        )
+
+        # Refresh state because the user message has now been
+        # persisted.
+        chat_data = store.get_chat(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={
+                "request": request,
+                "system_prompt": system_prompt,
+                "message": message,
+                "reply": result_message,
+                "chat_data": chat_data,
+            },
+        )
+
+    return app
+
+
+def run_server(
+    *,
+    chat_id: str,
+    user_id: str,
+    model: str,
+    llm: LLManager,
+    store: ChatStorage,
+) -> None:
+    """
+    Start the web interface for one Harness chat session.
+    """
 
     import uvicorn
-    # Note: set reload=False when passing dynamic in-memory variables like chat_id
-    uvicorn.run(chat, host="127.0.0.1", port=8000)
 
+    logging.info(
+        "Starting web server: "
+        "chat_id=%s user_id=%s model=%s",
+        chat_id,
+        user_id,
+        model,
+    )
 
-if __name__ == "__main__":
-    run_server("test_chat_123", "test_user_456")
+    app = create_app(
+        chat_id=chat_id,
+        user_id=user_id,
+        model=model,
+        llm=llm,
+        store=store,
+    )
+
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+    )

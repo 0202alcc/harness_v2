@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+
+  "user_id": "{{user_id}}",
+  "chat_id": "{{chat_id}}",
+
+  "state_version": 0,
+
+  "system_prompt": "{{system_prompt}}",
+
+  "current_model": {
+    "provider": "{{provider}}",
+    "model": "{{current_model}}"
+  },
+
+  "active_branch_id": "main",
+
+  "messages": [
+    {
+      "message_id": "{{message.message_id}}",
+      "sequence_number": "{{message.sequence_number}}",
+      "turn_id": "{{message.turn_id}}",
+
+      "branch_id": "main",
+      "parent_message_id": "{{message.parent_message_id}}",
+
+      "role": "{{message.role}}",
+      "content": "{{message.content}}",
+
+      "timestamp": "{{message.timestamp}}"
+    }
+  ],
+
+  "session_metadata": {
+    "language": "{{session_metadata.language}}",
+    "timezone": "{{session_metadata.timezone}}",
+
+    "created_at": "{{created_at}}",
+    "last_updated": "{{last_updated}}"
+  }
+}

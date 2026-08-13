@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+
+  "io_id": "{{uuid}}",
+  "io_number": "{{monotonic_io_number}}",
+
+  "user_id": "{{user_id}}",
+  "chat_id": "{{chat_id}}",
+  "branch_id": "{{branch_id}}",
+  "turn_id": "{{turn_id}}",
+
+  "run_id": "{{pipeline_run_id}}",
+  "node": "{{langgraph_node_name}}",
+
+  "chunk_index": "{{chunk_index_or_null}}",
+
+  "provider": "llama.cpp",
+  "model": "{{model}}",
+
+  "operation": "{{operation}}",
+  "endpoint": "{{endpoint}}",
+
+  "started_at": "{{timestamp}}",
+  "finished_at": "{{timestamp}}",
+  "duration_ms": "{{duration_ms}}",
+
+  "request": {},
+
+  "response": {},
+
+  "status": "success",
+  "error": null
+}

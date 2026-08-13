@@ -11,3 +11,6 @@ wheels/
 
 # Chat logs
 .logs
+
+# Environment variables
+.env

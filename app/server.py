@@ -6,25 +6,28 @@ import json
 import logging
 import os
 
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
 
-# Store state in a dictionary rather than simple scalars
-STATE = {"chat_id": None}
-
-PATH_TO_LOGS = "./.logs/"
-PATH_TO_CHAT_JSON_TEMPLATE = "./templates/chat_json_template.json"
-
+with open("config.json", "r") as f:
+    config = json.load(f)
+STATE = config.get("STATE", {"chat_id": None, "user_id": None})
+PATH_TO_LOGS = config.get("PATH", {}).get("logs", "./.logs/")
+PATH_TO_CHAT_JSON_TEMPLATE = config.get("PATH", {}).get("json_template", "./app/templates/chat_json_template.json")
 # Ensure logs directory exists
 os.makedirs(PATH_TO_LOGS, exist_ok=True)
 
-
-@app.get("/", response_class=HTMLResponse)
+chat = FastAPI()
+templates = Jinja2Templates(directory="./app/templates")
+@chat.get("/", response_class=HTMLResponse)
 async def read_form(request: Request):
     chat_id = STATE["chat_id"]
-    print(f"Handling GET request for chat ID: {chat_id}")
+    user_id = STATE["user_id"]
     
-    chat_data = fetch_chat_data(chat_id) if chat_id else None
+    if not chat_id or not user_id:
+        return HTMLResponse(content="Missing chat_id or user_id in state", status_code=400)
+        
+    print(f"Handling GET request for chat ID: {chat_id}, User ID: {user_id}")
+
+    chat_data = fetch_chat_data(chat_id, user_id) if chat_id else None
 
     # Context MUST be a dict containing "request"
     return templates.TemplateResponse(
@@ -34,12 +37,17 @@ async def read_form(request: Request):
     )
 
 
-@app.post("/send", response_class=HTMLResponse)
+@chat.post("/send", response_class=HTMLResponse)
 async def handle_form(
     request: Request, system_prompt: str = Form(...), message: str = Form(...)
 ):
     chat_id = STATE["chat_id"]
-    chat_data = fetch_chat_data(chat_id) if chat_id else None
+    user_id = STATE["user_id"]
+
+    if not chat_id or not user_id:
+        return HTMLResponse(content="Missing chat_id or user_id in state", status_code=400)
+
+    chat_data = fetch_chat_data(chat_id, user_id) if chat_id else None
 
     # Ensure chat_data is a dictionary before performing lookup
     if isinstance(chat_data, dict):
@@ -47,7 +55,7 @@ async def handle_form(
             chat_data["system_prompt"] = system_prompt
             chat_data["last_updated"] = datetime.datetime.now().isoformat()
 
-            chat_data_file = os.path.join(PATH_TO_LOGS, f"{chat_id}.json")
+            chat_data_file = get_chat_file_path(user_id, chat_id)
             with open(chat_data_file, "w") as f:
                 json.dump(chat_data, f, indent=2)
             logging.info(f"Updated system prompt for chat ID {chat_id}")
@@ -71,9 +79,15 @@ async def handle_form(
         },
     )
 
+def get_chat_file_path(user_id, chat_id):
+    user_dir = os.path.join(PATH_TO_LOGS, str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+    return os.path.join(user_dir, f"{chat_id}.json")
 
-def fetch_chat_data(chat_id):
-    chat_data_file = os.path.join(PATH_TO_LOGS, f"{chat_id}.json")
+def fetch_chat_data(chat_id, user_id):
+    if not chat_id or not user_id:
+        return None
+    chat_data_file = get_chat_file_path(user_id, chat_id)
 
     if os.path.exists(chat_data_file):
         try:
@@ -86,10 +100,9 @@ def fetch_chat_data(chat_id):
         except (json.JSONDecodeError, TypeError):
             logging.error(f"Chat data for {chat_id} is corrupt. Recreating.")
 
-    return generate_new_chat_data(chat_id)
+    return generate_new_chat_data(chat_id, user_id)
 
-
-def generate_new_chat_data(chat_id):
+def generate_new_chat_data(chat_id, user_id):
     try:
         with open(PATH_TO_CHAT_JSON_TEMPLATE, "r") as f:
             data = json.load(f)
@@ -100,6 +113,7 @@ def generate_new_chat_data(chat_id):
     now_iso = datetime.datetime.now().isoformat()
 
     data["chat_id"] = str(chat_id)
+    data["user_id"] = str(user_id)
     data["created_at"] = now_iso
     data["last_updated"] = now_iso
 
@@ -111,7 +125,7 @@ def generate_new_chat_data(chat_id):
             datetime.datetime.now().astimezone().tzinfo
         )
 
-    chat_data_file = os.path.join(PATH_TO_LOGS, f"{chat_id}.json")
+    chat_data_file = get_chat_file_path(user_id, chat_id)
     try:
         with open(chat_data_file, "w") as f:
             json.dump(data, f, indent=2)
@@ -121,14 +135,15 @@ def generate_new_chat_data(chat_id):
     return data
 
 
-def run_server(chat_id=None):
+def run_server(chat_id=None, user_id=None):
     STATE["chat_id"] = chat_id
-    logging.info(f"Starting server with chat ID: {STATE['chat_id']}")
+    STATE["user_id"] = user_id
+    logging.info(f"Starting server with chat ID: {STATE['chat_id']}, User ID: {STATE['user_id']}")
     
     import uvicorn
     # Note: set reload=False when passing dynamic in-memory variables like chat_id
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(chat, host="127.0.0.1", port=8000)
 
 
 if __name__ == "__main__":
-    run_server("test_chat_123")
+    run_server("test_chat_123", "test_user_456")

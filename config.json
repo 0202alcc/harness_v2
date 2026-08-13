@@ -1,0 +1,10 @@
+{
+    "STATE": {
+        "chat_id": null,
+        "user_id": null},
+    "PATH": {
+        "logs": "./.logs/",
+        "templates": "./app/templates/",
+        "json_template": "./app/templates/chat_json_template.json"
+    }
+}

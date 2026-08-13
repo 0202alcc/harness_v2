@@ -36,8 +36,10 @@ def main(chat_id=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Harness v1 - Local LLM Interface")
     parser.add_argument("-cid", "--chat_id", type=str, default=None, help="Chat ID for the session (optional)")
+    parser.add_argument("-m", "--model", type=str, default=None, help="Model name to use for the session (optional)")
     args = parser.parse_args()
     
     chat_id = main(args.chat_id)
-    print(f"Starting server with chat ID: {chat_id} for user: {USERNAME}")
-    run_server(chat_id, user_id)
+    model = args.model or (model_list[0].id if model_list else None)
+    print(f"Starting server with chat ID: {chat_id} for user: {USERNAME} using model: {model}")
+    run_server(chat_id, user_id, model)

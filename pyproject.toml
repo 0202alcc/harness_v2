@@ -13,6 +13,7 @@ dependencies = [
     "openai>=3.0.0",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.32",
+    "torch>=2.13.0",
     "transformers>=5.15.0",
     "tzdata>=2026.3",
     "tzlocal>=5.4.4",

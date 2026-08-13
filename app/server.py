@@ -1,7 +1,10 @@
 import datetime
+import sys
 from fastapi import FastAPI, Request, Form
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from Harness import Harness
 import json
 import logging
 import os
@@ -9,7 +12,7 @@ import os
 
 with open("config.json", "r") as f:
     config = json.load(f)
-STATE = config.get("STATE", {"chat_id": None, "user_id": None})
+STATE = config.get("STATE", {"chat_id": None, "user_id": None, "model": None})
 PATH_TO_LOGS = config.get("PATH", {}).get("logs", "./.logs/")
 PATH_TO_CHAT_JSON_TEMPLATE = config.get("PATH", {}).get("json_template", "./app/templates/chat_json_template.json")
 # Ensure logs directory exists
@@ -65,6 +68,14 @@ async def handle_form(
         )
 
     # send message through the langchain pipeline and get the result
+    harness = Harness(model=STATE["model"], user_id=user_id, chat_id=chat_id, chat_json=chat_data)
+    chunk_result = await run_in_threadpool(harness.chunk_message, message)
+    print(
+        f"[Harness] tokenizer={chunk_result['tokenizer']} "
+        f"total_tokens={chunk_result['total_tokens']} "
+        f"chunks={len(chunk_result['chunks'])}",
+        file=sys.stderr,
+    )
     
 
     return templates.TemplateResponse(
@@ -135,11 +146,22 @@ def generate_new_chat_data(chat_id, user_id):
     return data
 
 
-def run_server(chat_id=None, user_id=None):
+def run_server(chat_id=None, user_id=None, model=None):
     STATE["chat_id"] = chat_id
     STATE["user_id"] = user_id
-    logging.info(f"Starting server with chat ID: {STATE['chat_id']}, User ID: {STATE['user_id']}")
-    
+    STATE["model"] = model
+    logging.info(
+        f"Starting server with chat ID: {STATE['chat_id']}, "
+        f"User ID: {STATE['user_id']}, Model: {STATE['model']}"
+    )
+
+    if model:
+        try:
+            Harness(model=model, user_id=user_id or "warmup")._get_tokenizer()
+            logging.info("Tokenizer warmed for model %s", model)
+        except Exception as exc:
+            logging.warning("Tokenizer warmup failed for %s: %s", model, exc)
+
     import uvicorn
     # Note: set reload=False when passing dynamic in-memory variables like chat_id
     uvicorn.run(chat, host="127.0.0.1", port=8000)

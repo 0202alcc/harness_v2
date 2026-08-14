@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Any, TypedDict
 from .chunker import Chunk
 
 
@@ -31,3 +32,6 @@ class HarnessState(TypedDict, total=False):
 
     # Actual incremental LLM context
     thinking_token_ids: list[int]
+
+    # UI/server hook. It is deliberately ephemeral and never persisted.
+    on_annotation_event: Callable[[dict[str, Any]], None]

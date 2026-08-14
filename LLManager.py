@@ -1,9 +1,19 @@
 from __future__ import annotations
-from typing import Any, Sequence
+import json
+from typing import Any, Iterator, Sequence
 import httpx
 
 class ProviderError(RuntimeError):
     """Raised when an LLM provider request fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+    ):
+        super().__init__(message)
+        self.retryable = retryable
 
 class Provider:
     """
@@ -404,12 +414,6 @@ class LlamaCppProvider(Provider):
             etc.
         """
 
-        if extra_params.get("stream"):
-            raise NotImplementedError(
-                "Streaming is intentionally not implemented in "
-                "LLManager.complete() yet."
-            )
-
         if isinstance(prompt, str):
             normalized_prompt: str | list[int] = prompt
         else:
@@ -457,6 +461,57 @@ class LlamaCppProvider(Provider):
             "/completion",
             payload=payload,
         )
+
+    def stream_complete(
+        self,
+        prompt: str | Sequence[int],
+        model: str,
+        **kwargs: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield native llama.cpp ``/completion`` SSE events."""
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": (
+                prompt if isinstance(prompt, str) else list(prompt)
+            ),
+            "stream": True,
+            **kwargs,
+        }
+
+        try:
+            with self.client.stream(
+                "POST",
+                "/completion",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        return
+
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise ProviderError(
+                            "llama.cpp returned malformed streaming data: "
+                            f"{data[:500]}"
+                        ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise ProviderError(
+                f"llama.cpp streaming request failed "
+                f"({exc.response.status_code} POST /completion)",
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderError(
+                f"Could not stream from llama.cpp server at "
+                f"{self.base_url}/completion: {exc}",
+                retryable=True,
+            ) from exc
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -526,6 +581,13 @@ class LLManager:
 
     def complete(self, prompt, model: str, **kwargs):
         return self.provider.complete(
+            prompt,
+            model,
+            **kwargs,
+        )
+
+    def stream_complete(self, prompt, model: str, **kwargs):
+        return self.provider.stream_complete(
             prompt,
             model,
             **kwargs,

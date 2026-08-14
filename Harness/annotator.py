@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Any, TypedDict
+import time
 
-from LLManager import LLManager
+from LLManager import LLManager, ProviderError
 
 from .chunker import Chunk
 from .state import Annotation
@@ -21,6 +23,12 @@ from .state import Annotation
 #
 SOURCE_MARKER = "\n\n[Source chunk]\n"
 ANNOTATION_MARKER = "\n\n[Annotation]\n"
+
+# There are three initial attempts: the original request plus these retries.
+INITIAL_RETRY_DELAYS_SECONDS = (0.25, 1.0)
+# A continuation is a new completion request, so give the model server a
+# moment to release the interrupted stream before submitting it.
+CONTINUATION_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 
 
 class AnnotationResult(TypedDict):
@@ -102,6 +110,7 @@ class Annotator:
         *,
         thinking_token_ids: list[int],
         chunk: Chunk,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> AnnotationResult:
         """
         Append one source chunk to the evolving context and ask the
@@ -132,38 +141,135 @@ class Annotator:
             f"prompt_tokens={len(prompt_tokens)}"
         )
 
-        response = self.llm.complete(
-            prompt=prompt_tokens,
-            model=self.model,
-            n_predict=self.n_predict,
-            cache_prompt=True,
-            return_tokens=True,
-            temperature=self.temperature,
-            stop=[
-                SOURCE_MARKER,
-            ],
-        )
+        if on_event is not None:
+            on_event({
+                "type": "annotation_start",
+                "chunk_index": chunk["index"],
+            })
+
+        content_parts: list[str] = []
+        annotation_tokens: list[int] = []
+        initial_retry_index = 0
+        continuation_retry_index = 0
+
+        while True:
+            request_prompt = prompt_tokens + annotation_tokens
+            remaining_tokens = self.n_predict - len(annotation_tokens)
+
+            if remaining_tokens <= 0:
+                break
+
+            received_this_attempt = False
+
+            try:
+                for event in self.llm.stream_complete(
+                    prompt=request_prompt,
+                    model=self.model,
+                    n_predict=remaining_tokens,
+                    cache_prompt=True,
+                    return_tokens=True,
+                    temperature=self.temperature,
+                    stop=[
+                        SOURCE_MARKER,
+                    ],
+                ):
+                    content = event.get("content", "")
+                    tokens = event.get("tokens", [])
+
+                    if (
+                        isinstance(content, str)
+                        and content
+                        and not (
+                            isinstance(tokens, list)
+                            and tokens
+                        )
+                    ):
+                        raise RuntimeError(
+                            "llama.cpp streamed annotation content "
+                            "without raw token IDs; cannot safely "
+                            "resume after a connection drop"
+                        )
+
+                    if isinstance(tokens, list) and tokens:
+                        annotation_tokens.extend(tokens)
+                        received_this_attempt = True
+
+                    if isinstance(content, str) and content:
+                        content_parts.append(content)
+                        received_this_attempt = True
+                        if on_event is not None:
+                            on_event({
+                                "type": "annotation_delta",
+                                "chunk_index": chunk["index"],
+                                "content": content,
+                            })
+
+                break
+
+            except ProviderError as exc:
+                if not exc.retryable:
+                    raise
+
+                # No output reached Harness, so the original request can be
+                # retried unchanged without affecting the browser display.
+                if not annotation_tokens and not received_this_attempt:
+                    if initial_retry_index >= len(
+                        INITIAL_RETRY_DELAYS_SECONDS
+                    ):
+                        raise
+
+                    delay = INITIAL_RETRY_DELAYS_SECONDS[
+                        initial_retry_index
+                    ]
+                    initial_retry_index += 1
+                    time.sleep(delay)
+                    continue
+
+                # We have a partial annotation. Check the server first, then
+                # continue from its exact raw token prefix in a new request.
+                if continuation_retry_index >= len(
+                    CONTINUATION_RETRY_DELAYS_SECONDS
+                ):
+                    raise
+
+                delay = CONTINUATION_RETRY_DELAYS_SECONDS[
+                    continuation_retry_index
+                ]
+                continuation_retry_index += 1
+                time.sleep(delay)
+
+                health = self.llm.health()
+                if not health.get("ok"):
+                    # A failed health check consumes this bounded retry; the
+                    # next pass will wait longer before checking again.
+                    continue
+
+        annotation_text = "".join(content_parts)
 
         print(
             "[Annotator] "
             f"chunk={chunk['index']} completed "
-            f"generated_tokens={len(response.get('tokens', []))}"
+            f"generated_tokens={len(annotation_tokens)}"
         )
 
-        annotation_text = response.get("content")
-        annotation_tokens = response.get("tokens")
-
-        if not isinstance(annotation_text, str):
+        if not annotation_text:
             raise RuntimeError(
                 "llama.cpp completion did not return "
                 "annotation content"
             )
 
-        if not isinstance(annotation_tokens, list):
+        if not annotation_tokens:
             raise RuntimeError(
                 "llama.cpp completion did not return "
                 "generated token IDs"
             )
+
+        if on_event is not None:
+            on_event({
+                "type": "annotation_complete",
+                "chunk_index": chunk["index"],
+                "generated_token_count": len(annotation_tokens),
+            })
 
         annotation: Annotation = {
             "chunk_index": chunk["index"],

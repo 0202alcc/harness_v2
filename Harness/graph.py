@@ -67,6 +67,7 @@ def build_graph(
                 state["thinking_token_ids"]
             ),
             chunk=chunk,
+            on_event=state.get("on_annotation_event"),
         )
 
         return {

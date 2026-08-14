@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from typing import Any
 
 from LLManager import LLManager
 from storage import ChatStorage
@@ -75,6 +77,7 @@ class Harness:
         *,
         message: str,
         turn_id: str,
+        on_annotation_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> HarnessState:
         """
         Run one incoming user message through the Harness graph.
@@ -89,6 +92,9 @@ class Harness:
             "run_id": run_id,
             "message": message,
         }
+
+        if on_annotation_event is not None:
+            initial_state["on_annotation_event"] = on_annotation_event
 
         result = self.graph.invoke(
             initial_state

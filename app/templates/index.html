@@ -8,7 +8,7 @@
 <body>
 
     <h2>LLM Chat</h2>
-    <p>{{ chat_data }}</p>
+    <pre id="chat-data">{{ chat_metadata }}</pre>
     <div class="messages">
         {% for msg in chat_data.messages %}
             <div class="message {{ msg.role }}">
@@ -24,10 +24,14 @@
         {% endfor %}
     </div>
 
-    <form action="/send" method="post">
+    <form id="chat-form" action="/send" method="post">
         <div class="form-group">
-            <label for="system_prompt">System Prompt:</label>
-            <input type="text" id="system_prompt" name="system_prompt" value="{{ system_prompt if system_prompt else system_prompt }}" required>
+            <label for="system_prompt">System Prompt (optional):</label>
+            <input type="text" id="system_prompt" name="system_prompt" value="{{ chat_data.system_prompt or '' }}" placeholder="Uses the existing prompt when left blank">
+            <label>
+                <input type="checkbox" name="disable_system_prompt">
+                Disable system prompt for this conversation
+            </label>
         </div>
 
         <div class="form-group">
@@ -35,14 +39,89 @@
             <input type="text" id="message" name="message" value="{{ message if message else '' }}" required>
         </div>
 
-        <button type="send">send</button>
+        <button type="submit">Send</button>
     </form>
 
-    {% if reply %}
-    <div class="result">
-        <strong>Result:</strong> {{ reply }}
-    </div>
-    {% endif %}
+    <section id="annotations" aria-live="polite"></section>
+    <div id="result" class="result" hidden></div>
+
+    <script>
+        const form = document.getElementById("chat-form");
+        const annotations = document.getElementById("annotations");
+        const result = document.getElementById("result");
+
+        function annotationElement(index) {
+            let element = document.getElementById(`annotation-${index}`);
+            if (!element) {
+                element = document.createElement("article");
+                element.id = `annotation-${index}`;
+                element.innerHTML = `<strong>Annotation ${index + 1}</strong><pre></pre>`;
+                annotations.append(element);
+            }
+            return element.querySelector("pre");
+        }
+
+        function appendMessage(role, content) {
+            const message = document.createElement("div");
+            message.className = `message ${role}`;
+            const meta = document.createElement("div");
+            meta.className = "message-meta";
+            meta.textContent = role[0].toUpperCase() + role.slice(1);
+            const body = document.createElement("div");
+            body.className = "message-content";
+            body.textContent = content;
+            message.append(meta, body);
+            document.querySelector(".messages").append(message);
+        }
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            annotations.replaceChildren();
+            result.hidden = true;
+            const button = form.querySelector("button");
+            button.disabled = true;
+            const formData = new FormData(form);
+            appendMessage("user", formData.get("message"));
+            form.elements.message.value = "";
+
+            try {
+                const response = await fetch("/send", {
+                    method: "POST",
+                    body: formData,
+                });
+                if (!response.ok || !response.body) throw new Error("Could not start annotation stream.");
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const messages = buffer.split("\n\n");
+                    buffer = messages.pop();
+                    for (const message of messages) {
+                        if (!message.startsWith("data: ")) continue;
+                        const eventData = JSON.parse(message.slice(6));
+                        if (eventData.type === "annotation_delta") {
+                            annotationElement(eventData.chunk_index).textContent += eventData.content;
+                        } else if (eventData.type === "error") {
+                            throw new Error(eventData.message);
+                        } else if (eventData.type === "complete") {
+                            const data = eventData.result;
+                            result.textContent = `Message split into ${data.chunk_count} chunk(s), ${data.total_tokens} tokens. Generated ${data.annotation_count} annotation(s).`;
+                            result.hidden = false;
+                        }
+                    }
+                }
+            } catch (error) {
+                result.textContent = error.message;
+                result.hidden = false;
+            } finally {
+                button.disabled = false;
+            }
+        });
+    </script>
 
 </body>
 </html>

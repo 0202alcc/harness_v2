@@ -7,5 +7,6 @@
         "templates": "./app/templates/",
         "json_template": "./app/templates/chat_json_template.json"
     },
-    "ANNOTATION_INSTRUCTION": "I just received a message... here's my real-time thought process:"
+    "ANNOTATION_INSTRUCTION": "I just received a message... here's my real-time thought process:",
+    "THOUGHT_PROCESS_INSTRUCTION": "Synthesize the accumulated annotations into one coherent, complete thought process for the user's message."
 }

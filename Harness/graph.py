@@ -9,12 +9,14 @@ from langgraph.graph import END, START, StateGraph
 from .annotator import Annotator
 from .chunker import Chunker
 from .state import HarnessState
+from .thought_processor import ThoughtProcessor
 
 
 def build_graph(
     *,
     chunker: Chunker,
     annotator: Annotator,
+    thought_processor: ThoughtProcessor,
 ):
 
     # ---------------------------------------------------------
@@ -49,7 +51,9 @@ def build_graph(
             "current_chunk_index": 0,
             "annotations": [],
             "thinking_token_ids":
-                annotator.initialize(),
+                annotator.initialize(
+                    system_prompt=state.get("system_prompt"),
+                ),
         }
 
     # ---------------------------------------------------------
@@ -67,6 +71,8 @@ def build_graph(
                 state["thinking_token_ids"]
             ),
             chunk=chunk,
+            run_id=state["run_id"],
+            turn_id=state["turn_id"],
             on_event=state.get("on_annotation_event"),
         )
 
@@ -112,6 +118,21 @@ def build_graph(
             )
         }
 
+    def generate_thought_process(state: HarnessState) -> dict:
+        result = thought_processor.generate(
+            annotations=state["annotations"],
+            system_prompt=state.get("system_prompt"),
+            run_id=state["run_id"],
+            turn_id=state["turn_id"],
+        )
+        callback = state.get("on_annotation_event")
+        if callback is not None:
+            callback({"type": "thought_process_complete", "text": result["text"]})
+        return {
+            "thought_process": result["text"],
+            "thought_process_token_ids": result["token_ids"],
+        }
+
     # ---------------------------------------------------------
     # Build graph
     # ---------------------------------------------------------
@@ -137,6 +158,7 @@ def build_graph(
         "advance_chunk",
         advance_chunk,
     )
+    builder.add_node("generate_thought_process", generate_thought_process)
 
     builder.add_edge(
         START,
@@ -158,7 +180,7 @@ def build_graph(
         route_after_annotation,
         {
             "advance_chunk": "advance_chunk",
-            "end": END,
+            "end": "generate_thought_process",
         },
     )
 
@@ -166,5 +188,6 @@ def build_graph(
         "advance_chunk",
         "annotate_chunk",
     )
+    builder.add_edge("generate_thought_process", END)
 
     return builder.compile()

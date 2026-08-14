@@ -22,3 +22,11 @@ dependencies = [
     "uuid>=1.30",
     "uvicorn>=0.52.1",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]

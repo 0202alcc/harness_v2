@@ -15,6 +15,7 @@ from .chunker import (
 )
 from .graph import build_graph
 from .state import HarnessState
+from .thought_processor import ThoughtProcessor
 
 
 class Harness:
@@ -31,6 +32,7 @@ class Harness:
         user_id: str,
         chat_id: str,
         annotation_instruction: str,
+        thought_process_instruction: str,
     ):
         self.llm = llm
         self.store = store
@@ -51,10 +53,21 @@ class Harness:
 
         self.annotator = Annotator(
             llm=self.llm,
+            store=self.store,
             model=self.model,
+            user_id=self.user_id,
+            chat_id=self.chat_id,
             instruction=annotation_instruction,
             n_predict=32,
             temperature=0.4,
+        )
+        self.thought_processor = ThoughtProcessor(
+            llm=self.llm,
+            store=self.store,
+            model=self.model,
+            user_id=self.user_id,
+            chat_id=self.chat_id,
+            instruction=thought_process_instruction,
         )
 
         # -----------------------------------------------------
@@ -64,6 +77,7 @@ class Harness:
         self.graph = build_graph(
             chunker=self.chunker,
             annotator=self.annotator,
+            thought_processor=self.thought_processor,
         )
 
     def get_chat_state(self) -> dict:
@@ -84,6 +98,7 @@ class Harness:
         """
 
         run_id = str(uuid.uuid4())
+        chat_state = self.get_chat_state()
 
         initial_state: HarnessState = {
             "chat_id": self.chat_id,
@@ -91,6 +106,7 @@ class Harness:
             "turn_id": turn_id,
             "run_id": run_id,
             "message": message,
+            "system_prompt": chat_state.get("system_prompt"),
         }
 
         if on_annotation_event is not None:
@@ -115,4 +131,6 @@ class Harness:
             "\nthinking_token_ids:",
             len(result["thinking_token_ids"]),
         )
+        print("\n--- Thought process ---")
+        print(result["thought_process"])
         return result

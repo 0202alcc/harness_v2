@@ -24,9 +24,39 @@
   "finished_at": "{{timestamp}}",
   "duration_ms": "{{duration_ms}}",
 
-  "request": {},
+  "request": {
+    "stream": true,
+    "prompt_token_count": "{{integer}}",
+    "prompt_token_sha256": "{{sha256}}",
+    "n_predict": "{{integer}}",
+    "cache_prompt": true,
+    "return_tokens": true,
+    "return_progress": true,
+    "temperature": "{{number}}",
+    "stop": [],
+    "attempt": {
+      "kind": "initial|initial_retry|continuation",
+      "initial_retry_index": "{{integer}}",
+      "continuation_retry_index": "{{integer}}"
+    }
+  },
 
-  "response": {},
+  "response": {
+    "stream_event_count": "{{integer}}",
+    "generated_token_count": "{{integer}}",
+    "generated_token_ids": [],
+    "generated_content": "{{string}}",
+    "tokens_cached": "{{integer_or_null}}",
+    "tokens_evaluated": "{{integer_or_null}}",
+    "llama_tokens_cached": "{{integer_or_null}}",
+    "llama_tokens_evaluated": "{{integer_or_null}}",
+    "prompt_progress": {},
+    "slot_id": "{{integer_or_null}}",
+    "timings": {},
+    "stop_type": "{{string_or_null}}",
+    "truncated": "{{boolean_or_null}}",
+    "final_event": {}
+  },
 
   "status": "success",
   "error": null

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import hashlib
+import json
 from typing import Any, TypedDict
 import time
 
 from LLManager import LLManager, ProviderError
+from storage import ChatStorage, utc_now
 
 from .chunker import Chunk
 from .state import Annotation
@@ -54,7 +57,10 @@ class Annotator:
         self,
         *,
         llm: LLManager,
+        store: ChatStorage,
         model: str,
+        user_id: str,
+        chat_id: str,
         instruction: str,
         n_predict: int = 64,
         temperature: float = 0.4,
@@ -65,7 +71,10 @@ class Annotator:
             )
 
         self.llm = llm
+        self.store = store
         self.model = model
+        self.user_id = user_id
+        self.chat_id = chat_id
         self.instruction = instruction
 
         self.n_predict = n_predict
@@ -89,6 +98,8 @@ class Annotator:
 
     def initialize(
         self,
+        *,
+        system_prompt: str | None = None,
     ) -> list[int]:
         """
         Create the initial token sequence for one annotation pass.
@@ -98,8 +109,15 @@ class Annotator:
         special beginning token here.
         """
 
+        initial_instruction = self.instruction
+        if system_prompt:
+            initial_instruction = (
+                f"{system_prompt.rstrip()}\n\n"
+                f"{self.instruction}"
+            )
+
         return self.llm.tokenize(
-            self.instruction,
+            initial_instruction,
             model=self.model,
             add_special=True,
             parse_special=False,
@@ -110,6 +128,8 @@ class Annotator:
         *,
         thinking_token_ids: list[int],
         chunk: Chunk,
+        run_id: str,
+        turn_id: str,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> AnnotationResult:
         """
@@ -160,6 +180,21 @@ class Annotator:
                 break
 
             received_this_attempt = False
+            attempt_events: list[dict[str, Any]] = []
+            attempt_content_parts: list[str] = []
+            attempt_tokens: list[int] = []
+            started_at = utc_now()
+            started_clock = time.perf_counter()
+            attempt_kind = (
+                "initial"
+                if not annotation_tokens
+                and initial_retry_index == 0
+                else (
+                    "initial_retry"
+                    if not annotation_tokens
+                    else "continuation"
+                )
+            )
 
             try:
                 for event in self.llm.stream_complete(
@@ -168,11 +203,13 @@ class Annotator:
                     n_predict=remaining_tokens,
                     cache_prompt=True,
                     return_tokens=True,
+                    return_progress=True,
                     temperature=self.temperature,
                     stop=[
                         SOURCE_MARKER,
                     ],
                 ):
+                    attempt_events.append(event)
                     content = event.get("content", "")
                     tokens = event.get("tokens", [])
 
@@ -192,10 +229,12 @@ class Annotator:
 
                     if isinstance(tokens, list) and tokens:
                         annotation_tokens.extend(tokens)
+                        attempt_tokens.extend(tokens)
                         received_this_attempt = True
 
                     if isinstance(content, str) and content:
                         content_parts.append(content)
+                        attempt_content_parts.append(content)
                         received_this_attempt = True
                         if on_event is not None:
                             on_event({
@@ -204,9 +243,47 @@ class Annotator:
                                 "content": content,
                             })
 
+                self._trace_completion(
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    chunk_index=chunk["index"],
+                    prompt_tokens=request_prompt,
+                    n_predict=remaining_tokens,
+                    attempt_kind=attempt_kind,
+                    initial_retry_index=initial_retry_index,
+                    continuation_retry_index=continuation_retry_index,
+                    started_at=started_at,
+                    started_clock=started_clock,
+                    events=attempt_events,
+                    generated_tokens=attempt_tokens,
+                    generated_content="".join(attempt_content_parts),
+                    status="success",
+                    error=None,
+                )
                 break
 
             except ProviderError as exc:
+                self._trace_completion(
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    chunk_index=chunk["index"],
+                    prompt_tokens=request_prompt,
+                    n_predict=remaining_tokens,
+                    attempt_kind=attempt_kind,
+                    initial_retry_index=initial_retry_index,
+                    continuation_retry_index=continuation_retry_index,
+                    started_at=started_at,
+                    started_clock=started_clock,
+                    events=attempt_events,
+                    generated_tokens=attempt_tokens,
+                    generated_content="".join(attempt_content_parts),
+                    status="error",
+                    error={
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                        "retryable": exc.retryable,
+                    },
+                )
                 if not exc.retryable:
                     raise
 
@@ -243,6 +320,29 @@ class Annotator:
                     # A failed health check consumes this bounded retry; the
                     # next pass will wait longer before checking again.
                     continue
+
+            except Exception as exc:
+                self._trace_completion(
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    chunk_index=chunk["index"],
+                    prompt_tokens=request_prompt,
+                    n_predict=remaining_tokens,
+                    attempt_kind=attempt_kind,
+                    initial_retry_index=initial_retry_index,
+                    continuation_retry_index=continuation_retry_index,
+                    started_at=started_at,
+                    started_clock=started_clock,
+                    events=attempt_events,
+                    generated_tokens=attempt_tokens,
+                    generated_content="".join(attempt_content_parts),
+                    status="error",
+                    error={
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                )
+                raise
 
         annotation_text = "".join(content_parts)
 
@@ -285,3 +385,109 @@ class Annotator:
                 + annotation_tokens
             ),
         }
+
+    def _trace_completion(
+        self,
+        *,
+        run_id: str,
+        turn_id: str,
+        chunk_index: int,
+        prompt_tokens: list[int],
+        n_predict: int,
+        attempt_kind: str,
+        initial_retry_index: int,
+        continuation_retry_index: int,
+        started_at: str,
+        started_clock: float,
+        events: list[dict[str, Any]],
+        generated_tokens: list[int],
+        generated_content: str,
+        status: str,
+        error: dict[str, Any] | None,
+    ) -> None:
+        """Persist one native llama.cpp completion attempt as JSONL."""
+
+        def last_value(*keys: str) -> Any:
+            for event in reversed(events):
+                for key in keys:
+                    if event.get(key) is not None:
+                        return event[key]
+            return None
+
+        prompt_fingerprint = hashlib.sha256(
+            json.dumps(prompt_tokens, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        prompt_progress = last_value("prompt_progress")
+        timings = last_value("timings")
+        llama_tokens_cached = last_value("tokens_cached")
+        llama_tokens_evaluated = last_value("tokens_evaluated")
+        tokens_cached = None
+        tokens_evaluated = None
+
+        # The top-level tokens_cached value is the slot's post-generation
+        # cache size, not the reused prefix. Prefer the actual prompt-work
+        # counters exposed in timings or stream progress.
+        if isinstance(timings, dict):
+            tokens_cached = timings.get("cache_n")
+            tokens_evaluated = timings.get("prompt_n")
+
+        if isinstance(prompt_progress, dict):
+            if tokens_cached is None:
+                tokens_cached = prompt_progress.get("cache")
+            if tokens_evaluated is None:
+                processed = prompt_progress.get("processed")
+                cached = prompt_progress.get("cache")
+                if isinstance(processed, int) and isinstance(cached, int):
+                    tokens_evaluated = processed - cached
+
+        response = {
+            "stream_event_count": len(events),
+            "generated_token_count": len(generated_tokens),
+            "generated_token_ids": generated_tokens,
+            "generated_content": generated_content,
+            "tokens_cached": tokens_cached,
+            "tokens_evaluated": tokens_evaluated,
+            "llama_tokens_cached": llama_tokens_cached,
+            "llama_tokens_evaluated": llama_tokens_evaluated,
+            "prompt_progress": prompt_progress,
+            "slot_id": last_value("slot_id", "id_slot", "slot"),
+            "timings": timings,
+            "stop_type": last_value("stop_type"),
+            "truncated": last_value("truncated"),
+            "final_event": events[-1] if events else None,
+        }
+
+        self.store.append_llama_io(
+            chat_id=self.chat_id,
+            user_id=self.user_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            node="annotate_chunk",
+            provider="llama.cpp",
+            model=self.model,
+            operation="completion",
+            endpoint="/completion",
+            request={
+                "stream": True,
+                "prompt_token_count": len(prompt_tokens),
+                "prompt_token_sha256": prompt_fingerprint,
+                "n_predict": n_predict,
+                "cache_prompt": True,
+                "return_tokens": True,
+                "return_progress": True,
+                "temperature": self.temperature,
+                "stop": [SOURCE_MARKER],
+                "attempt": {
+                    "kind": attempt_kind,
+                    "initial_retry_index": initial_retry_index,
+                    "continuation_retry_index": continuation_retry_index,
+                },
+            },
+            response=response,
+            started_at=started_at,
+            finished_at=utc_now(),
+            duration_ms=(time.perf_counter() - started_clock) * 1000,
+            chunk_index=chunk_index,
+            status=status,
+            error=error,
+        )

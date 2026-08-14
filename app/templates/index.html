@@ -43,12 +43,14 @@
     </form>
 
     <section id="annotations" aria-live="polite"></section>
+    <section id="thought-process" aria-live="polite"></section>
     <div id="result" class="result" hidden></div>
 
     <script>
         const form = document.getElementById("chat-form");
         const annotations = document.getElementById("annotations");
         const result = document.getElementById("result");
+        const thoughtProcess = document.getElementById("thought-process");
 
         function annotationElement(index) {
             let element = document.getElementById(`annotation-${index}`);
@@ -77,6 +79,7 @@
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
             annotations.replaceChildren();
+            thoughtProcess.replaceChildren();
             result.hidden = true;
             const button = form.querySelector("button");
             button.disabled = true;
@@ -105,6 +108,9 @@
                         const eventData = JSON.parse(message.slice(6));
                         if (eventData.type === "annotation_delta") {
                             annotationElement(eventData.chunk_index).textContent += eventData.content;
+                        } else if (eventData.type === "thought_process_complete") {
+                            thoughtProcess.innerHTML = "<strong>Complete thought process</strong><pre></pre>";
+                            thoughtProcess.querySelector("pre").textContent = eventData.text;
                         } else if (eventData.type === "error") {
                             throw new Error(eventData.message);
                         } else if (eventData.type === "complete") {

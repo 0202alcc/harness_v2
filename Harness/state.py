@@ -21,6 +21,7 @@ class HarnessState(TypedDict, total=False):
 
     # Input
     message: str
+    system_prompt: str | None
 
     # Chunking
     chunks: list[Chunk]
@@ -29,6 +30,8 @@ class HarnessState(TypedDict, total=False):
     # Annotation pass
     current_chunk_index: int
     annotations: list[Annotation]
+    thought_process: str
+    thought_process_token_ids: list[int]
 
     # Actual incremental LLM context
     thinking_token_ids: list[int]

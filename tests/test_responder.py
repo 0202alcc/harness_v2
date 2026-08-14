@@ -8,13 +8,19 @@ from storage import ChatStorage
 class FakeLLM:
     def __init__(self):
         self.prompt = ""
+        self.complete_kwargs = {}
 
     def tokenize(self, text, **kwargs):
         self.prompt = text
         return [1, 2, 3]
 
-    def complete(self, **kwargs):
-        return {"content": "Here is my answer.", "tokens": [4], "timings": {"cache_n": 0, "prompt_n": 3}}
+    def apply_chat_template(self, messages, **kwargs):
+        return "\n".join(message["content"] for message in messages)
+
+    def stream_complete(self, **kwargs):
+        self.complete_kwargs = kwargs
+        yield {"content": '{"response":"Here is', "tokens": [4], "timings": {"cache_n": 0, "prompt_n": 3}}
+        yield {"content": ' my answer."}', "tokens": [5], "timings": {"cache_n": 0, "prompt_n": 3}}
 
 
 def test_response_uses_message_and_thought_without_annotation_instruction(tmp_path):
@@ -26,17 +32,35 @@ def test_response_uses_message_and_thought_without_annotation_instruction(tmp_pa
         instruction="Now answer the user:",
     )
 
+    events = []
     result = responder.generate(
         message="What does this mean?",
         thought_process="The message asks for an explanation.",
         system_prompt="Be concise.",
+        conversation_history="[Conversation history]\nAssistant: Earlier answer",
         run_id="run", turn_id="turn",
+        on_event=events.append,
     )
 
     assert "What does this mean?" in llm.prompt
     assert "The message asks for an explanation." in llm.prompt
+    assert "Assistant: Earlier answer" in llm.prompt
     assert "I just received a message" not in llm.prompt
     assert result["text"] == "Here is my answer."
+    assert llm.complete_kwargs["stop"] == ["<turn|>"]
+    assert llm.complete_kwargs["json_schema"] == {
+        "type": "object",
+        "properties": {"response": {"type": "string"}},
+        "required": ["response"],
+        "additionalProperties": False,
+    }
+    assert [event["type"] for event in events] == [
+        "response_start",
+        "response_delta",
+        "response_delta",
+    ]
     [record] = [json.loads(line) for line in Path(store.get_llama_io_path("user", "chat")).read_text().splitlines()]
     assert record["node"] == "generate_final_response"
     assert record["request"]["includes_annotation_instruction"] is False
+    assert record["response"]["generated_content"] == '{"response":"Here is my answer."}'
+    assert record["response"]["decoded_response"] == "Here is my answer."

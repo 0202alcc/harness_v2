@@ -22,6 +22,7 @@ class HarnessState(TypedDict, total=False):
     # Input
     message: str
     system_prompt: str | None
+    conversation_history: str | None
 
     # Chunking
     chunks: list[Chunk]

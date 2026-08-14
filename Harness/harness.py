@@ -17,6 +17,7 @@ from .graph import build_graph
 from .state import HarnessState
 from .thought_processor import ThoughtProcessor
 from .responder import Responder
+from .history import format_conversation_history
 
 
 class Harness:
@@ -107,6 +108,10 @@ class Harness:
 
         run_id = str(uuid.uuid4())
         chat_state = self.get_chat_state()
+        conversation_history = format_conversation_history(
+            chat_state.get("messages", []),
+            current_turn_id=turn_id,
+        )
 
         initial_state: HarnessState = {
             "chat_id": self.chat_id,
@@ -115,6 +120,7 @@ class Harness:
             "run_id": run_id,
             "message": message,
             "system_prompt": chat_state.get("system_prompt"),
+            "conversation_history": conversation_history,
         }
 
         if on_annotation_event is not None:

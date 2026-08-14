@@ -49,6 +49,17 @@
         const result = document.getElementById("result");
         const messages = document.querySelector(".messages");
         let activeUserMessage = null;
+        let activeThoughtContent = null;
+        let activeResponseContent = null;
+
+        function scrollToBottom(behavior = "smooth") {
+            window.scrollTo({
+                top: document.documentElement.scrollHeight,
+                behavior,
+            });
+        }
+
+        window.addEventListener("load", () => scrollToBottom("auto"));
 
         function createUserMessage() {
             const message = document.createElement("div");
@@ -80,18 +91,24 @@
             activeUserMessage.append(quote);
         }
 
-        function appendThoughtProcess(text) {
+        function startThoughtProcess() {
             if (!activeUserMessage) activeUserMessage = createUserMessage();
             const details = document.createElement("details");
+            details.open = true;
             const summary = document.createElement("summary");
             summary.textContent = "Complete thought process";
             const content = document.createElement("pre");
-            content.textContent = text;
             details.append(summary, content);
             activeUserMessage.append(details);
+            activeThoughtContent = content;
         }
 
-        function appendAssistantResponse(text) {
+        function appendThoughtProcess(text) {
+            if (!activeThoughtContent) startThoughtProcess();
+            activeThoughtContent.textContent += text;
+        }
+
+        function startAssistantResponse() {
             const message = document.createElement("div");
             message.className = "message assistant";
             const meta = document.createElement("div");
@@ -99,14 +116,21 @@
             meta.textContent = "Assistant";
             const body = document.createElement("div");
             body.className = "message-content";
-            body.textContent = text;
             message.append(meta, body);
             messages.append(message);
+            activeResponseContent = body;
+        }
+
+        function appendAssistantResponse(text) {
+            if (!activeResponseContent) startAssistantResponse();
+            activeResponseContent.textContent += text;
         }
 
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
             activeUserMessage = null;
+            activeThoughtContent = null;
+            activeResponseContent = null;
             result.hidden = true;
             const button = form.querySelector("button");
             button.disabled = true;
@@ -137,10 +161,19 @@
                         } else if (eventData.type === "annotation_delta") {
                             const annotation = document.querySelector(`#annotation-${eventData.chunk_index} pre`);
                             if (annotation) annotation.textContent += eventData.content;
+                        } else if (eventData.type === "thought_process_start") {
+                            startThoughtProcess();
+                        } else if (eventData.type === "thought_process_delta") {
+                            appendThoughtProcess(eventData.content);
                         } else if (eventData.type === "thought_process_complete") {
-                            appendThoughtProcess(eventData.text);
+                            if (!activeThoughtContent) appendThoughtProcess(eventData.text);
+                        } else if (eventData.type === "response_start") {
+                            startAssistantResponse();
+                        } else if (eventData.type === "response_delta") {
+                            appendAssistantResponse(eventData.content);
                         } else if (eventData.type === "response_complete") {
-                            appendAssistantResponse(eventData.text);
+                            if (!activeResponseContent) appendAssistantResponse(eventData.text);
+                            scrollToBottom();
                         } else if (eventData.type === "error") {
                             throw new Error(eventData.message);
                         } else if (eventData.type === "complete") {

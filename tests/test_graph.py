@@ -20,7 +20,7 @@ class FakeChunker:
 
 
 class FakeAnnotator:
-    def initialize(self, *, system_prompt=None):
+    def initialize(self, *, system_prompt=None, conversation_history=None):
         return [0]
 
     def annotate(self, *, thinking_token_ids, chunk, **kwargs):

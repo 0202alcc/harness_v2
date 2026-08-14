@@ -100,6 +100,7 @@ class Annotator:
         self,
         *,
         system_prompt: str | None = None,
+        conversation_history: str | None = None,
     ) -> list[int]:
         """
         Create the initial token sequence for one annotation pass.
@@ -109,12 +110,13 @@ class Annotator:
         special beginning token here.
         """
 
-        initial_instruction = self.instruction
+        initial_parts = []
         if system_prompt:
-            initial_instruction = (
-                f"{system_prompt.rstrip()}\n\n"
-                f"{self.instruction}"
-            )
+            initial_parts.append(system_prompt.rstrip())
+        if conversation_history:
+            initial_parts.append(conversation_history)
+        initial_parts.append(self.instruction)
+        initial_instruction = "\n\n".join(initial_parts)
 
         return self.llm.tokenize(
             initial_instruction,

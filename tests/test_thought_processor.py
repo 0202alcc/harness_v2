@@ -13,8 +13,8 @@ class FakeLLM:
         self.tokenized_text.append(text)
         return [1, 2, 3]
 
-    def complete(self, **kwargs):
-        return {
+    def stream_complete(self, **kwargs):
+        yield {
             "content": "A complete synthesis.",
             "tokens": [9, 10],
             "id_slot": 0,
@@ -35,6 +35,7 @@ def test_thought_process_uses_system_and_annotations_not_annotation_instruction(
         instruction="Create a complete synthesis.",
     )
 
+    events = []
     result = processor.generate(
         annotations=[{
             "chunk_index": 0,
@@ -42,17 +43,24 @@ def test_thought_process_uses_system_and_annotations_not_annotation_instruction(
             "token_ids": [4],
         }],
         system_prompt="Be concise.",
+        conversation_history="[Conversation history]\nUser: Earlier question",
         run_id="run",
         turn_id="turn",
+        on_event=events.append,
     )
 
     prompt = llm.tokenized_text[0]
     assert prompt.index("Be concise.") < prompt.index("Chunk 0:")
+    assert prompt.index("[Conversation history]") < prompt.index("Chunk 0:")
     assert prompt.index("Chunk 0:") < prompt.index("[Complete thought process]")
     assert prompt.index("[Complete thought process]") < prompt.index("Create a complete synthesis.")
     assert "Chunk 0: The message describes a journey." in prompt
     assert "I just received a message" not in prompt
     assert result["text"] == "A complete synthesis."
+    assert [event["type"] for event in events] == [
+        "thought_process_start",
+        "thought_process_delta",
+    ]
 
     [record] = [
         json.loads(line)

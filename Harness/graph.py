@@ -55,6 +55,7 @@ def build_graph(
             "thinking_token_ids":
                 annotator.initialize(
                     system_prompt=state.get("system_prompt"),
+                    conversation_history=state.get("conversation_history"),
                 ),
         }
 
@@ -124,8 +125,10 @@ def build_graph(
         result = thought_processor.generate(
             annotations=state["annotations"],
             system_prompt=state.get("system_prompt"),
+            conversation_history=state.get("conversation_history"),
             run_id=state["run_id"],
             turn_id=state["turn_id"],
+            on_event=state.get("on_annotation_event"),
         )
         callback = state.get("on_annotation_event")
         if callback is not None:
@@ -140,8 +143,10 @@ def build_graph(
             message=state["message"],
             thought_process=state["thought_process"],
             system_prompt=state.get("system_prompt"),
+            conversation_history=state.get("conversation_history"),
             run_id=state["run_id"],
             turn_id=state["turn_id"],
+            on_event=state.get("on_annotation_event"),
         )
         callback = state.get("on_annotation_event")
         if callback is not None:

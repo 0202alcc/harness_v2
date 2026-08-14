@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Any, TypedDict
 
 from LLManager import LLManager
 from storage import ChatStorage, utc_now
@@ -52,8 +53,10 @@ class ThoughtProcessor:
         *,
         annotations: list[Annotation],
         system_prompt: str | None,
+        conversation_history: str | None,
         run_id: str,
         turn_id: str,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> ThoughtProcessResult:
         annotation_text = "\n".join(
             f"Chunk {annotation['chunk_index']}: {annotation['text']}"
@@ -62,6 +65,8 @@ class ThoughtProcessor:
         prompt_parts = []
         if system_prompt:
             prompt_parts.append(system_prompt.rstrip())
+        if conversation_history:
+            prompt_parts.append(conversation_history)
         # The thought-process instruction must be the final prompt prefix.
         # If it precedes the annotations, the model treats it as another item
         # to analyse rather than as the cue to begin its own continuation.
@@ -81,7 +86,7 @@ class ThoughtProcessor:
         started_at = utc_now()
         started_clock = time.perf_counter()
         request = {
-            "stream": False,
+            "stream": True,
             "prompt_token_count": len(prompt_tokens),
             "prompt_token_sha256": hashlib.sha256(
                 json.dumps(prompt_tokens, separators=(",", ":")).encode("utf-8")
@@ -94,15 +99,30 @@ class ThoughtProcessor:
             "includes_annotation_instruction": False,
         }
 
+        events: list[dict[str, Any]] = []
+        content_parts: list[str] = []
+        token_ids: list[int] = []
+        if on_event is not None:
+            on_event({"type": "thought_process_start"})
         try:
-            response = self.llm.complete(
+            for event in self.llm.stream_complete(
                 prompt=prompt_tokens,
                 model=self.model,
                 n_predict=self.n_predict,
                 cache_prompt=True,
                 return_tokens=True,
+                return_progress=True,
                 temperature=self.temperature,
-            )
+            ):
+                events.append(event)
+                content = event.get("content", "")
+                tokens = event.get("tokens", [])
+                if isinstance(content, str) and content:
+                    content_parts.append(content)
+                    if on_event is not None:
+                        on_event({"type": "thought_process_delta", "content": content})
+                if isinstance(tokens, list):
+                    token_ids.extend(tokens)
         except Exception as exc:
             self._trace(
                 run_id, turn_id, request, None, started_at, started_clock,
@@ -110,9 +130,9 @@ class ThoughtProcessor:
             )
             raise
 
-        text = response.get("content")
-        token_ids = response.get("tokens")
-        if not isinstance(text, str) or not isinstance(token_ids, list):
+        text = "".join(content_parts)
+        response = {**(events[-1] if events else {}), "content": text, "tokens": token_ids}
+        if not text or not token_ids:
             error = {
                 "type": "InvalidCompletionResponse",
                 "message": "llama.cpp did not return thought-process content and tokens",

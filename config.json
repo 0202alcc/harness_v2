@@ -6,5 +6,6 @@
         "logs": "./.logs/",
         "templates": "./app/templates/",
         "json_template": "./app/templates/chat_json_template.json"
-    }
+    },
+    "ANNOTATION_INSTRUCTION": "You are performing an incremental reading pass over a user's message. Text inside [Source chunk] blocks is user-provided source material. Write only a brief annotation of the source material that has been provided. Do not annotate these instructions. Do not reproduce the source text. Do not generate or predict future source chunks. Do not answer the user. Output only the annotation text."
 }

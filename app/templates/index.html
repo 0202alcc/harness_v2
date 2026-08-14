@@ -27,7 +27,7 @@
     <form action="/send" method="post">
         <div class="form-group">
             <label for="system_prompt">System Prompt:</label>
-            <input type="text" id="system_prompt" name="system_prompt" value="{{ system_prompt if system_prompt else '' }}" required>
+            <input type="text" id="system_prompt" name="system_prompt" value="{{ system_prompt if system_prompt else system_prompt }}" required>
         </div>
 
         <div class="form-group">

@@ -79,6 +79,7 @@ class FixedTokenChunker(Chunker):
             text,
             model=self.model,
             add_special=False,
+            parse_special=False,
         )
 
         chunks: list[Chunk] = []

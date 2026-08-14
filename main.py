@@ -106,6 +106,7 @@ def main(
     *,
     base_url: str,
     username: str,
+    annotation_instruction: str,
     chat_id: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
@@ -252,6 +253,7 @@ def main(
             model=selected_model,
             llm=llm,
             store=store,
+            annotation_instruction=annotation_instruction,
         )
 
     finally:
@@ -279,6 +281,14 @@ if __name__ == "__main__":
         .get("logs", "./.logs/")
     )
 
+    annotation_instruction = config.get(
+        "ANNOTATION_INSTRUCTION"
+    )
+
+    if not annotation_instruction:
+        raise RuntimeError(
+            "ANNOTATION_INSTRUCTION is missing from config.json"
+        )
     # ---------------------------------------------------------
     # CLI
     # ---------------------------------------------------------
@@ -323,4 +333,5 @@ if __name__ == "__main__":
         chat_id=args.chat_id,
         model=args.model,
         log_root=log_root,
+        annotation_instruction=annotation_instruction,
     )

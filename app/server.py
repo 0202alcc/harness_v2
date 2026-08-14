@@ -43,6 +43,7 @@ def create_app(
     model: str,
     llm: LLManager,
     store: ChatStorage,
+    annotation_instruction: str,
 ) -> FastAPI:
     """
     Construct the FastAPI application and inject the application's
@@ -64,6 +65,7 @@ def create_app(
         model=model,
         user_id=user_id,
         chat_id=chat_id,
+        annotation_instruction=annotation_instruction,
     )
 
     # ---------------------------------------------------------
@@ -135,24 +137,29 @@ def create_app(
 
         turn_id = user_message["turn_id"]
 
-        chunk_result = await run_in_threadpool(
-            harness.chunk_message,
-            message,
+        result = await run_in_threadpool(
+            harness.handle_message,
+            message=message,
+            turn_id=turn_id,
         )
 
         logging.info(
-            "Chunked user message: "
-            "chat_id=%s turn_id=%s tokens=%d chunks=%d",
+            "Harness completed: "
+            "chat_id=%s turn_id=%s run_id=%s "
+            "tokens=%d chunks=%d",
             chat_id,
             turn_id,
-            chunk_result["total_tokens"],
-            len(chunk_result["chunks"]),
+            result["run_id"],
+            result["total_tokens"],
+            len(result["chunks"]),
         )
 
         result_message = (
-            f"Message received and split into "
-            f"{len(chunk_result['chunks'])} chunk(s) "
-            f"({chunk_result['total_tokens']} tokens)."
+            f"Message split into "
+            f"{len(result['chunks'])} chunk(s), "
+            f"{result['total_tokens']} tokens. "
+            f"Generated "
+            f"{len(result['annotations'])} annotation(s)."
         )
 
         chat_data = store.get_chat(
@@ -184,6 +191,7 @@ def run_server(
     model: str,
     llm: LLManager,
     store: ChatStorage,
+    annotation_instruction: str,
 ) -> None:
     """
     Start the web interface for one Harness chat session.
@@ -205,6 +213,7 @@ def run_server(
         model=model,
         llm=llm,
         store=store,
+        annotation_instruction=annotation_instruction,
     )
 
     uvicorn.run(

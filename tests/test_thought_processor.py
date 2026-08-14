@@ -47,7 +47,9 @@ def test_thought_process_uses_system_and_annotations_not_annotation_instruction(
     )
 
     prompt = llm.tokenized_text[0]
-    assert prompt.index("Be concise.") < prompt.index("Create a complete synthesis.")
+    assert prompt.index("Be concise.") < prompt.index("Chunk 0:")
+    assert prompt.index("Chunk 0:") < prompt.index("[Complete thought process]")
+    assert prompt.index("[Complete thought process]") < prompt.index("Create a complete synthesis.")
     assert "Chunk 0: The message describes a journey." in prompt
     assert "I just received a message" not in prompt
     assert result["text"] == "A complete synthesis."

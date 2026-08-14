@@ -42,49 +42,75 @@
         <button type="submit">Send</button>
     </form>
 
-    <section id="annotations" aria-live="polite"></section>
-    <section id="thought-process" aria-live="polite"></section>
     <div id="result" class="result" hidden></div>
 
     <script>
         const form = document.getElementById("chat-form");
-        const annotations = document.getElementById("annotations");
         const result = document.getElementById("result");
-        const thoughtProcess = document.getElementById("thought-process");
+        const messages = document.querySelector(".messages");
+        let activeUserMessage = null;
 
-        function annotationElement(index) {
-            let element = document.getElementById(`annotation-${index}`);
-            if (!element) {
-                element = document.createElement("article");
-                element.id = `annotation-${index}`;
-                element.innerHTML = `<strong>Annotation ${index + 1}</strong><pre></pre>`;
-                annotations.append(element);
-            }
-            return element.querySelector("pre");
-        }
-
-        function appendMessage(role, content) {
+        function createUserMessage() {
             const message = document.createElement("div");
-            message.className = `message ${role}`;
+            message.className = "message user";
             const meta = document.createElement("div");
             meta.className = "message-meta";
-            meta.textContent = role[0].toUpperCase() + role.slice(1);
+            meta.textContent = "User";
             const body = document.createElement("div");
             body.className = "message-content";
-            body.textContent = content;
             message.append(meta, body);
-            document.querySelector(".messages").append(message);
+            messages.append(message);
+            return body;
+        }
+
+        function appendChunkAndAnnotation(eventData) {
+            if (!activeUserMessage) activeUserMessage = createUserMessage();
+
+            const chunk = document.createElement("span");
+            chunk.className = "source-chunk";
+            chunk.textContent = eventData.chunk_text;
+            activeUserMessage.append(chunk);
+
+            const quote = document.createElement("blockquote");
+            quote.id = `annotation-${eventData.chunk_index}`;
+            const label = document.createElement("strong");
+            label.textContent = `Annotation ${eventData.chunk_index + 1}`;
+            const content = document.createElement("pre");
+            quote.append(label, content);
+            activeUserMessage.append(quote);
+        }
+
+        function appendThoughtProcess(text) {
+            if (!activeUserMessage) activeUserMessage = createUserMessage();
+            const details = document.createElement("details");
+            const summary = document.createElement("summary");
+            summary.textContent = "Complete thought process";
+            const content = document.createElement("pre");
+            content.textContent = text;
+            details.append(summary, content);
+            activeUserMessage.append(details);
+        }
+
+        function appendAssistantResponse(text) {
+            const message = document.createElement("div");
+            message.className = "message assistant";
+            const meta = document.createElement("div");
+            meta.className = "message-meta";
+            meta.textContent = "Assistant";
+            const body = document.createElement("div");
+            body.className = "message-content";
+            body.textContent = text;
+            message.append(meta, body);
+            messages.append(message);
         }
 
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
-            annotations.replaceChildren();
-            thoughtProcess.replaceChildren();
+            activeUserMessage = null;
             result.hidden = true;
             const button = form.querySelector("button");
             button.disabled = true;
             const formData = new FormData(form);
-            appendMessage("user", formData.get("message"));
             form.elements.message.value = "";
 
             try {
@@ -106,11 +132,15 @@
                     for (const message of messages) {
                         if (!message.startsWith("data: ")) continue;
                         const eventData = JSON.parse(message.slice(6));
-                        if (eventData.type === "annotation_delta") {
-                            annotationElement(eventData.chunk_index).textContent += eventData.content;
+                        if (eventData.type === "annotation_start") {
+                            appendChunkAndAnnotation(eventData);
+                        } else if (eventData.type === "annotation_delta") {
+                            const annotation = document.querySelector(`#annotation-${eventData.chunk_index} pre`);
+                            if (annotation) annotation.textContent += eventData.content;
                         } else if (eventData.type === "thought_process_complete") {
-                            thoughtProcess.innerHTML = "<strong>Complete thought process</strong><pre></pre>";
-                            thoughtProcess.querySelector("pre").textContent = eventData.text;
+                            appendThoughtProcess(eventData.text);
+                        } else if (eventData.type === "response_complete") {
+                            appendAssistantResponse(eventData.text);
                         } else if (eventData.type === "error") {
                             throw new Error(eventData.message);
                         } else if (eventData.type === "complete") {

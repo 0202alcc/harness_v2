@@ -16,6 +16,7 @@ from .chunker import (
 from .graph import build_graph
 from .state import HarnessState
 from .thought_processor import ThoughtProcessor
+from .responder import Responder
 
 
 class Harness:
@@ -33,6 +34,7 @@ class Harness:
         chat_id: str,
         annotation_instruction: str,
         thought_process_instruction: str,
+        response_instruction: str,
     ):
         self.llm = llm
         self.store = store
@@ -69,6 +71,11 @@ class Harness:
             chat_id=self.chat_id,
             instruction=thought_process_instruction,
         )
+        self.responder = Responder(
+            llm=self.llm, store=self.store, model=self.model,
+            user_id=self.user_id, chat_id=self.chat_id,
+            instruction=response_instruction,
+        )
 
         # -----------------------------------------------------
         # Compile Harness graph
@@ -78,6 +85,7 @@ class Harness:
             chunker=self.chunker,
             annotator=self.annotator,
             thought_processor=self.thought_processor,
+            responder=self.responder,
         )
 
     def get_chat_state(self) -> dict:
@@ -133,4 +141,13 @@ class Harness:
         )
         print("\n--- Thought process ---")
         print(result["thought_process"])
+        print("\n--- Response ---")
+        print(result["response"])
+        self.store.append_message(
+            chat_id=self.chat_id,
+            user_id=self.user_id,
+            role="assistant",
+            content=result["response"],
+            turn_id=turn_id,
+        )
         return result

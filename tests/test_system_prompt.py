@@ -25,6 +25,7 @@ def make_client(tmp_path, system_prompt):
         store=store,
         annotation_instruction="Annotate.",
         thought_process_instruction="Think.",
+        response_instruction="Respond.",
     )
     app.state.harness.handle_message = lambda **_: {
         "run_id": "run",
@@ -32,6 +33,8 @@ def make_client(tmp_path, system_prompt):
         "chunks": [{}],
         "annotations": [],
         "thought_process_token_ids": [],
+        "response_token_ids": [],
+        "response": "response",
     }
     return TestClient(app), store
 

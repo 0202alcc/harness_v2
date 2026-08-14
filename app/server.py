@@ -48,6 +48,7 @@ def create_app(
     store: ChatStorage,
     annotation_instruction: str,
     thought_process_instruction: str,
+    response_instruction: str,
 ) -> FastAPI:
     """
     Construct the FastAPI application and inject the application's
@@ -71,6 +72,7 @@ def create_app(
         chat_id=chat_id,
         annotation_instruction=annotation_instruction,
         thought_process_instruction=thought_process_instruction,
+        response_instruction=response_instruction,
     )
 
     # ---------------------------------------------------------
@@ -176,6 +178,7 @@ def create_app(
                         "chunk_count": len(result["chunks"]),
                         "annotation_count": len(result["annotations"]),
                         "thought_process_token_count": len(result["thought_process_token_ids"]),
+                        "response_token_count": len(result["response_token_ids"]),
                     },
                 })
                 return result
@@ -215,6 +218,7 @@ def run_server(
     store: ChatStorage,
     annotation_instruction: str,
     thought_process_instruction: str,
+    response_instruction: str,
 ) -> None:
     """
     Start the web interface for one Harness chat session.
@@ -238,6 +242,7 @@ def run_server(
         store=store,
         annotation_instruction=annotation_instruction,
         thought_process_instruction=thought_process_instruction,
+        response_instruction=response_instruction,
     )
 
     uvicorn.run(

@@ -165,6 +165,7 @@ class Annotator:
             on_event({
                 "type": "annotation_start",
                 "chunk_index": chunk["index"],
+                "chunk_text": chunk["text"],
             })
 
         content_parts: list[str] = []

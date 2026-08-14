@@ -108,6 +108,7 @@ def main(
     username: str,
     annotation_instruction: str,
     thought_process_instruction: str,
+    response_instruction: str,
     chat_id: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
@@ -256,6 +257,7 @@ def main(
             store=store,
             annotation_instruction=annotation_instruction,
             thought_process_instruction=thought_process_instruction,
+            response_instruction=response_instruction,
         )
 
     finally:
@@ -294,6 +296,9 @@ if __name__ == "__main__":
     thought_process_instruction = config.get("THOUGHT_PROCESS_INSTRUCTION")
     if not thought_process_instruction:
         raise RuntimeError("THOUGHT_PROCESS_INSTRUCTION is missing from config.json")
+    response_instruction = config.get("RESPONSE_INSTRUCTION")
+    if not response_instruction:
+        raise RuntimeError("RESPONSE_INSTRUCTION is missing from config.json")
     # ---------------------------------------------------------
     # CLI
     # ---------------------------------------------------------
@@ -340,4 +345,5 @@ if __name__ == "__main__":
         log_root=log_root,
         annotation_instruction=annotation_instruction,
         thought_process_instruction=thought_process_instruction,
+        response_instruction=response_instruction,
     )

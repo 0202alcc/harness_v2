@@ -32,6 +32,8 @@ class HarnessState(TypedDict, total=False):
     annotations: list[Annotation]
     thought_process: str
     thought_process_token_ids: list[int]
+    response: str
+    response_token_ids: list[int]
 
     # Actual incremental LLM context
     thinking_token_ids: list[int]

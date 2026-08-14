@@ -62,10 +62,13 @@ class ThoughtProcessor:
         prompt_parts = []
         if system_prompt:
             prompt_parts.append(system_prompt.rstrip())
+        # The thought-process instruction must be the final prompt prefix.
+        # If it precedes the annotations, the model treats it as another item
+        # to analyse rather than as the cue to begin its own continuation.
         prompt_parts.extend([
-            self.instruction,
             f"{ANNOTATIONS_MARKER}{annotation_text}",
             THOUGHT_PROCESS_MARKER,
+            self.instruction,
         ])
         prompt = "\n\n".join(prompt_parts)
         prompt_tokens = self.llm.tokenize(

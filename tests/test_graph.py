@@ -39,6 +39,11 @@ class FakeThoughtProcessor:
         return {"text": "thought", "token_ids": [5]}
 
 
+class FakeResponder:
+    def generate(self, **kwargs):
+        return {"text": "response", "token_ids": [6]}
+
+
 def test_chunk_graph():
     from Harness.graph import build_graph
 
@@ -46,6 +51,7 @@ def test_chunk_graph():
         chunker=FakeChunker(),
         annotator=FakeAnnotator(),
         thought_processor=FakeThoughtProcessor(),
+        responder=FakeResponder(),
     )
 
     result = graph.invoke({
@@ -60,3 +66,4 @@ def test_chunk_graph():
     assert len(result["chunks"]) == 1
     assert result["annotations"][0]["text"] == "annotation"
     assert result["thought_process"] == "thought"
+    assert result["response"] == "response"

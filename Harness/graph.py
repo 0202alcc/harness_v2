@@ -10,6 +10,7 @@ from .annotator import Annotator
 from .chunker import Chunker
 from .state import HarnessState
 from .thought_processor import ThoughtProcessor
+from .responder import Responder
 
 
 def build_graph(
@@ -17,6 +18,7 @@ def build_graph(
     chunker: Chunker,
     annotator: Annotator,
     thought_processor: ThoughtProcessor,
+    responder: Responder,
 ):
 
     # ---------------------------------------------------------
@@ -133,6 +135,19 @@ def build_graph(
             "thought_process_token_ids": result["token_ids"],
         }
 
+    def generate_final_response(state: HarnessState) -> dict:
+        result = responder.generate(
+            message=state["message"],
+            thought_process=state["thought_process"],
+            system_prompt=state.get("system_prompt"),
+            run_id=state["run_id"],
+            turn_id=state["turn_id"],
+        )
+        callback = state.get("on_annotation_event")
+        if callback is not None:
+            callback({"type": "response_complete", "text": result["text"]})
+        return {"response": result["text"], "response_token_ids": result["token_ids"]}
+
     # ---------------------------------------------------------
     # Build graph
     # ---------------------------------------------------------
@@ -159,6 +174,7 @@ def build_graph(
         advance_chunk,
     )
     builder.add_node("generate_thought_process", generate_thought_process)
+    builder.add_node("generate_final_response", generate_final_response)
 
     builder.add_edge(
         START,
@@ -188,6 +204,7 @@ def build_graph(
         "advance_chunk",
         "annotate_chunk",
     )
-    builder.add_edge("generate_thought_process", END)
+    builder.add_edge("generate_thought_process", "generate_final_response")
+    builder.add_edge("generate_final_response", END)
 
     return builder.compile()

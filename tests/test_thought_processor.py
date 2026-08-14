@@ -15,7 +15,7 @@ class FakeLLM:
 
     def stream_complete(self, **kwargs):
         yield {
-            "content": "A complete synthesis.",
+            "content": '{"thought_process":"A complete synthesis."}',
             "tokens": [9, 10],
             "id_slot": 0,
             "timings": {"cache_n": 0, "prompt_n": 3},
@@ -68,3 +68,5 @@ def test_thought_process_uses_system_and_annotations_not_annotation_instruction(
     ]
     assert record["node"] == "generate_thought_process"
     assert record["request"]["includes_annotation_instruction"] is False
+    assert record["request"]["json_schema"]["required"] == ["thought_process"]
+    assert record["response"]["decoded_thought_process"] == "A complete synthesis."

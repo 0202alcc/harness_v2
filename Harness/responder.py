@@ -8,74 +8,15 @@ from typing import Any, TypedDict
 
 from LLManager import LLManager
 from storage import ChatStorage, utc_now
+from .structured_output import (
+    JSONFieldStreamDecoder,
+    single_string_schema,
+    structured_output_instruction,
+)
 
 
 GEMMA_END_OF_TURN = "<turn|>"
-RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {"response": {"type": "string"}},
-    "required": ["response"],
-    "additionalProperties": False,
-}
-
-
-class _ResponseStreamDecoder:
-    """Extract the ``response`` JSON string without exposing JSON to the UI."""
-
-    def __init__(self) -> None:
-        self.raw = ""
-        self.position = 0
-        self.started = False
-        self.finished = False
-        self.escape = ""
-
-    def feed(self, fragment: str) -> str:
-        self.raw += fragment
-        if not self.started:
-            key_index = self.raw.find('"response"')
-            if key_index < 0:
-                return ""
-            quote_index = self.raw.find('"', self.raw.find(":", key_index) + 1)
-            if quote_index < 0:
-                return ""
-            self.started = True
-            self.position = quote_index + 1
-
-        output: list[str] = []
-        while self.position < len(self.raw) and not self.finished:
-            char = self.raw[self.position]
-            self.position += 1
-            if self.escape:
-                self.escape += char
-                if self.escape == "\\u":
-                    continue
-                if self.escape.startswith("\\u"):
-                    if len(self.escape) < 6:
-                        continue
-                    output.append(chr(int(self.escape[2:], 16)))
-                else:
-                    output.append({
-                        '\\\"': '"', '\\\\': '\\', '\\/': '/', '\\b': '\b',
-                        '\\f': '\f', '\\n': '\n', '\\r': '\r', '\\t': '\t',
-                    }.get(self.escape, self.escape[-1]))
-                self.escape = ""
-            elif char == "\\":
-                self.escape = "\\"
-            elif char == '"':
-                self.finished = True
-            else:
-                output.append(char)
-        return "".join(output)
-
-    def result(self) -> str:
-        try:
-            value = json.loads(self.raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError("llama.cpp returned incomplete constrained JSON") from exc
-        response = value.get("response") if isinstance(value, dict) else None
-        if not isinstance(response, str):
-            raise ValueError("llama.cpp constrained JSON did not contain a string response")
-        return response
+RESPONSE_SCHEMA = single_string_schema("response")
 
 
 class ResponseResult(TypedDict):
@@ -110,8 +51,7 @@ class Responder:
             f"The user's newest message is:\n{message}",
             f"Use this internal reasoning to inform your answer; do not repeat it:\n{thought_process}",
             self.instruction,
-            'Return exactly one JSON object with one key, "response". '
-            'Its string value must contain only the reply to the user.',
+            structured_output_instruction("response"),
         ])
         messages = []
         if system_prompt:
@@ -144,7 +84,7 @@ class Responder:
         started_clock = time.perf_counter()
         events: list[dict[str, Any]] = []
         raw_content_parts: list[str] = []
-        decoder = _ResponseStreamDecoder()
+        decoder = JSONFieldStreamDecoder("response")
         tokens: list[int] = []
         if on_event is not None:
             on_event({"type": "response_start"})

@@ -79,7 +79,7 @@ def test_normal_streaming_persists_one_successful_completion(tmp_path):
     annotator, llm, store = make_annotator(
         tmp_path,
         [[
-            stream_event("Hello", 10),
+            stream_event('{"annotation":"Hello"}', 10),
             stream_event("", 11, final=True),
         ]],
     )
@@ -103,7 +103,7 @@ def test_connection_drop_before_tokens_retries_original_prompt(tmp_path):
         [
             ProviderError("dropped", retryable=True),
             [
-                stream_event("Recovered", 10),
+                stream_event('{"annotation":"Recovered"}', 10),
                 stream_event("", 0, final=True),
             ],
         ],
@@ -123,7 +123,7 @@ def test_connection_drop_before_tokens_retries_original_prompt(tmp_path):
 
 def test_mid_stream_drop_continues_from_received_token_prefix(tmp_path):
     def interrupted_stream():
-        yield stream_event("First", 10)
+        yield stream_event('{"annotation":"First', 10)
         raise ProviderError("dropped", retryable=True)
 
     annotator, llm, store = make_annotator(
@@ -131,7 +131,7 @@ def test_mid_stream_drop_continues_from_received_token_prefix(tmp_path):
         [
             interrupted_stream,
             [
-                stream_event(" second", 11),
+                stream_event(' second"}', 11),
                 stream_event("", 0, final=True),
             ],
         ],
@@ -148,3 +148,4 @@ def test_mid_stream_drop_continues_from_received_token_prefix(tmp_path):
     failed, succeeded = read_trace(store)
     assert failed["response"]["generated_token_ids"] == [10]
     assert succeeded["request"]["attempt"]["kind"] == "continuation"
+    assert succeeded["request"]["json_schema"]["required"] == ["annotation"]

@@ -61,7 +61,7 @@ class Harness:
             user_id=self.user_id,
             chat_id=self.chat_id,
             instruction=annotation_instruction,
-            n_predict=32,
+            n_predict=48,
             temperature=0.4,
         )
         self.thought_processor = ThoughtProcessor(

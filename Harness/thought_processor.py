@@ -10,10 +10,16 @@ from LLManager import LLManager
 from storage import ChatStorage, utc_now
 
 from .state import Annotation
+from .structured_output import (
+    JSONFieldStreamDecoder,
+    single_string_schema,
+    structured_output_instruction,
+)
 
 
 ANNOTATIONS_MARKER = "\n\n[Accumulated annotations]\n"
 THOUGHT_PROCESS_MARKER = "\n\n[Complete thought process]\n"
+THOUGHT_PROCESS_SCHEMA = single_string_schema("thought_process")
 
 
 class ThoughtProcessResult(TypedDict):
@@ -74,6 +80,7 @@ class ThoughtProcessor:
             f"{ANNOTATIONS_MARKER}{annotation_text}",
             THOUGHT_PROCESS_MARKER,
             self.instruction,
+            structured_output_instruction("thought_process"),
         ])
         prompt = "\n\n".join(prompt_parts)
         prompt_tokens = self.llm.tokenize(
@@ -96,11 +103,13 @@ class ThoughtProcessor:
             "return_tokens": True,
             "temperature": self.temperature,
             "stop": [],
+            "json_schema": THOUGHT_PROCESS_SCHEMA,
             "includes_annotation_instruction": False,
         }
 
         events: list[dict[str, Any]] = []
-        content_parts: list[str] = []
+        raw_content_parts: list[str] = []
+        decoder = JSONFieldStreamDecoder("thought_process")
         token_ids: list[int] = []
         if on_event is not None:
             on_event({"type": "thought_process_start"})
@@ -113,14 +122,16 @@ class ThoughtProcessor:
                 return_tokens=True,
                 return_progress=True,
                 temperature=self.temperature,
+                json_schema=THOUGHT_PROCESS_SCHEMA,
             ):
                 events.append(event)
                 content = event.get("content", "")
                 tokens = event.get("tokens", [])
                 if isinstance(content, str) and content:
-                    content_parts.append(content)
-                    if on_event is not None:
-                        on_event({"type": "thought_process_delta", "content": content})
+                    raw_content_parts.append(content)
+                    decoded_content = decoder.feed(content)
+                    if decoded_content and on_event is not None:
+                        on_event({"type": "thought_process_delta", "content": decoded_content})
                 if isinstance(tokens, list):
                     token_ids.extend(tokens)
         except Exception as exc:
@@ -130,8 +141,17 @@ class ThoughtProcessor:
             )
             raise
 
-        text = "".join(content_parts)
-        response = {**(events[-1] if events else {}), "content": text, "tokens": token_ids}
+        raw_content = "".join(raw_content_parts)
+        response = {**(events[-1] if events else {}), "content": raw_content, "tokens": token_ids}
+        try:
+            text = decoder.result()
+        except ValueError as exc:
+            self._trace(
+                run_id, turn_id, request, response, started_at, started_clock,
+                "error", {"type": type(exc).__name__, "message": str(exc)},
+            )
+            raise RuntimeError(str(exc)) from exc
+        response["decoded_thought_process"] = text
         if not text or not token_ids:
             error = {
                 "type": "InvalidCompletionResponse",
@@ -160,6 +180,7 @@ class ThoughtProcessor:
                 "generated_token_count": len(response.get("tokens", [])) if response else 0,
                 "generated_token_ids": response.get("tokens", []) if response else [],
                 "generated_content": response.get("content") if response else "",
+                "decoded_thought_process": response.get("decoded_thought_process") if response else None,
                 "tokens_cached": timings.get("cache_n") if isinstance(timings, dict) else None,
                 "tokens_evaluated": timings.get("prompt_n") if isinstance(timings, dict) else None,
                 "slot_id": response.get("id_slot") if response else None,

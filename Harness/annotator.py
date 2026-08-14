@@ -13,6 +13,11 @@ from storage import ChatStorage, utc_now
 
 from .chunker import Chunk
 from .state import Annotation
+from .structured_output import (
+    JSONFieldStreamDecoder,
+    single_string_schema,
+    structured_output_instruction,
+)
 
 
 # Plain-text delimiters for V1.
@@ -26,6 +31,7 @@ from .state import Annotation
 #
 SOURCE_MARKER = "\n\n[Source chunk]\n"
 ANNOTATION_MARKER = "\n\n[Annotation]\n"
+ANNOTATION_SCHEMA = single_string_schema("annotation")
 
 # There are three initial attempts: the original request plus these retries.
 INITIAL_RETRY_DELAYS_SECONDS = (0.25, 1.0)
@@ -116,6 +122,7 @@ class Annotator:
         if conversation_history:
             initial_parts.append(conversation_history)
         initial_parts.append(self.instruction)
+        initial_parts.append(structured_output_instruction("annotation"))
         initial_instruction = "\n\n".join(initial_parts)
 
         return self.llm.tokenize(
@@ -170,7 +177,7 @@ class Annotator:
                 "chunk_text": chunk["text"],
             })
 
-        content_parts: list[str] = []
+        decoder = JSONFieldStreamDecoder("annotation")
         annotation_tokens: list[int] = []
         initial_retry_index = 0
         continuation_retry_index = 0
@@ -208,9 +215,7 @@ class Annotator:
                     return_tokens=True,
                     return_progress=True,
                     temperature=self.temperature,
-                    stop=[
-                        SOURCE_MARKER,
-                    ],
+                    json_schema=ANNOTATION_SCHEMA,
                 ):
                     attempt_events.append(event)
                     content = event.get("content", "")
@@ -236,14 +241,14 @@ class Annotator:
                         received_this_attempt = True
 
                     if isinstance(content, str) and content:
-                        content_parts.append(content)
+                        decoded_content = decoder.feed(content)
                         attempt_content_parts.append(content)
                         received_this_attempt = True
-                        if on_event is not None:
+                        if decoded_content and on_event is not None:
                             on_event({
                                 "type": "annotation_delta",
                                 "chunk_index": chunk["index"],
-                                "content": content,
+                                "content": decoded_content,
                             })
 
                 self._trace_completion(
@@ -347,7 +352,10 @@ class Annotator:
                 )
                 raise
 
-        annotation_text = "".join(content_parts)
+        try:
+            annotation_text = decoder.result()
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
         print(
             "[Annotator] "
@@ -479,7 +487,8 @@ class Annotator:
                 "return_tokens": True,
                 "return_progress": True,
                 "temperature": self.temperature,
-                "stop": [SOURCE_MARKER],
+                "stop": [],
+                "json_schema": ANNOTATION_SCHEMA,
                 "attempt": {
                     "kind": attempt_kind,
                     "initial_retry_index": initial_retry_index,

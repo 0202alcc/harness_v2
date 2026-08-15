@@ -111,6 +111,8 @@ def main(
     response_instruction: str,
     markers: dict[str, str] | None = None,
     thought_process_output_prefix: str | None = None,
+    github_repository: str | None = None,
+    github_token: str | None = None,
     chat_id: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
@@ -262,6 +264,8 @@ def main(
             response_instruction=response_instruction,
             markers=markers,
             thought_process_output_prefix=thought_process_output_prefix,
+            github_repository=github_repository,
+            github_token=github_token,
         )
 
     finally:
@@ -340,6 +344,7 @@ if __name__ == "__main__":
         help="Username for the session.",
     )
 
+
     args = parser.parse_args()
 
     # ---------------------------------------------------------
@@ -358,4 +363,6 @@ if __name__ == "__main__":
         response_instruction=response_instruction,
         markers=markers,
         thought_process_output_prefix=thought_process_output_prefix,
+        github_repository=env.get("HARNESS_GITHUB_REPOSITORY"),
+        github_token=env.get("HARNESS_GITHUB_TOKEN"),
     )

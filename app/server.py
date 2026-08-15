@@ -8,14 +8,16 @@ import json
 import uuid
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from Harness import Harness
 from LLManager import LLManager
 from storage import ChatStorage
+from app.github_issues import format_issue_body
 
 
 templates = Jinja2Templates(
@@ -52,6 +54,8 @@ def create_app(
     response_instruction: str,
     markers: dict[str, str] | None = None,
     thought_process_output_prefix: str | None = None,
+    github_repository: str | None = None,
+    github_token: str | None = None,
 ) -> FastAPI:
     """
     Construct the FastAPI application and inject the application's
@@ -91,6 +95,8 @@ def create_app(
     app.state.llm = llm
     app.state.store = store
     app.state.harness = harness
+    app.state.github_repository = github_repository
+    app.state.github_token = github_token
 
     def get_harness(selected_chat_id: str) -> Harness:
         """Reuse the startup Harness for its chat; build one for another chat."""
@@ -160,6 +166,75 @@ def create_app(
         )
         return RedirectResponse(url=f"/?chat_id={new_chat_id}", status_code=303)
 
+    @app.post("/issues")
+    async def create_issue(
+        title: str = Form(...),
+        description: str = Form(""),
+        chat_id: str = Form(...),
+        run_id: str = Form(...),
+        include_trace: bool = Form(False),
+    ) -> JSONResponse:
+        """Create a user-requested GitHub issue for one traced run."""
+        if not github_repository or not github_token:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "GitHub issue reporting is not configured on this server."
+                ),
+            )
+        if not include_trace:
+            raise HTTPException(
+                status_code=400,
+                detail="Confirm raw trace attachment before submitting an issue.",
+            )
+        try:
+            store.get_chat(chat_id=chat_id, user_id=user_id)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Chat not found") from exc
+
+        trace_records = store.get_llama_io_for_run(
+            user_id=user_id,
+            chat_id=chat_id,
+            run_id=run_id,
+        )
+        if not trace_records:
+            raise HTTPException(
+                status_code=404,
+                detail="No llama.cpp trace was recorded for this run.",
+            )
+
+        body = format_issue_body(
+            chat_id=chat_id,
+            run_id=run_id,
+            model=model,
+            description=description,
+            trace_records=trace_records,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    f"https://api.github.com/repos/{github_repository}/issues",
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "Authorization": f"Bearer {github_token}",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"title": title.strip(), "body": body},
+                )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logging.exception("GitHub issue creation failed")
+            raise HTTPException(
+                status_code=502,
+                detail="GitHub could not create the issue.",
+            ) from exc
+
+        issue = response.json()
+        return JSONResponse({
+            "number": issue.get("number"),
+            "url": issue.get("html_url"),
+        })
+
     @app.post(
         "/send",
         response_class=HTMLResponse,
@@ -205,6 +280,7 @@ def create_app(
 
         turn_id = user_message["turn_id"]
 
+        run_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -217,6 +293,7 @@ def create_app(
                     selected_harness.handle_message,
                     message=message,
                     turn_id=turn_id,
+                    run_id=run_id,
                     on_annotation_event=send_event,
                 )
                 send_event({
@@ -233,7 +310,7 @@ def create_app(
                 return result
             except Exception as exc:
                 logging.exception("Harness failed")
-                send_event({"type": "error", "message": str(exc)})
+                send_event({"type": "error", "message": str(exc), "run_id": run_id})
                 return {}
 
         task = asyncio.create_task(run_harness())
@@ -270,6 +347,8 @@ def run_server(
     response_instruction: str,
     markers: dict[str, str] | None = None,
     thought_process_output_prefix: str | None = None,
+    github_repository: str | None = None,
+    github_token: str | None = None,
 ) -> None:
     """
     Start the web interface for one Harness chat session.
@@ -296,6 +375,8 @@ def run_server(
         response_instruction=response_instruction,
         markers=markers,
         thought_process_output_prefix=thought_process_output_prefix,
+        github_repository=github_repository,
+        github_token=github_token,
     )
 
     uvicorn.run(

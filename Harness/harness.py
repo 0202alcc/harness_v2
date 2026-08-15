@@ -108,13 +108,14 @@ class Harness:
         *,
         message: str,
         turn_id: str,
+        run_id: str | None = None,
         on_annotation_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> HarnessState:
         """
         Run one incoming user message through the Harness graph.
         """
 
-        run_id = str(uuid.uuid4())
+        run_id = run_id or str(uuid.uuid4())
         chat_state = self.get_chat_state()
         conversation_history = format_conversation_history(
             chat_state.get("messages", []),

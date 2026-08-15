@@ -182,6 +182,33 @@ class ChatStorage:
             / LLAMA_IO_FILENAME
         )
 
+    def get_llama_io_for_run(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        run_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return the trace records for one run without crossing chat boundaries."""
+        with self._chat_lock(user_id, chat_id):
+            path = self.get_llama_io_path(user_id, chat_id)
+            if not path.exists():
+                return []
+            records: list[dict[str, Any]] = []
+            with path.open("r", encoding="utf-8") as trace_file:
+                for line in trace_file:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise StorageCorruptionError(
+                            f"Corrupt JSONL record in {path}"
+                        ) from exc
+                    if record.get("run_id") == run_id:
+                        records.append(record)
+            return records
+
     # =================================================================
     # Locking
     # =================================================================

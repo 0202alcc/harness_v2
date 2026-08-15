@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from Harness.thought_processor import ThoughtProcessor
+from LLManager import ProviderError
 from storage import ChatStorage
 
 
@@ -15,7 +17,7 @@ class FakeLLM:
 
     def stream_complete(self, **kwargs):
         yield {
-            "content": '{"thought_process":"A complete synthesis."}',
+            "content": '{"chunk":"A complete synthesis.","done":true}',
             "tokens": [9, 10],
             "id_slot": 0,
             "timings": {"cache_n": 0, "prompt_n": 3},
@@ -70,7 +72,7 @@ def test_thought_process_uses_system_and_annotations_not_annotation_instruction(
     ]
     assert record["node"] == "generate_thought_process"
     assert record["request"]["includes_annotation_instruction"] is False
-    assert record["request"]["json_schema"]["required"] == ["thought_process"]
+    assert record["request"]["json_schema"]["required"] == ["chunk", "done"]
     assert record["response"]["decoded_thought_process"] == "A complete synthesis."
 
 
@@ -110,7 +112,7 @@ def test_thought_process_strips_configured_generated_prefix(tmp_path):
     class PrefixedLLM(FakeLLM):
         def stream_complete(self, **kwargs):
             yield {
-                "content": '{"thought_process":"Think first: The actual note."}',
+                "content": '{"chunk":"Think first: The actual note.","done":true}',
                 "tokens": [9],
                 "id_slot": 0,
                 "timings": {"cache_n": 0, "prompt_n": 3},
@@ -143,3 +145,68 @@ def test_thought_process_strips_configured_generated_prefix(tmp_path):
     assert result["text"] == "The actual note."
     assert events[-1] == {"type": "thought_process_delta", "content": "The actual note."}
     assert 'must begin exactly with: "Think first: "' in llm.tokenized_text[0]
+
+
+def test_thought_process_concatenates_complete_protocol_chunks(tmp_path):
+    class ChunkedLLM(FakeLLM):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def stream_complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {"content": '{"chunk":"First ","done":false}', "tokens": [9]}
+            else:
+                yield {"content": '{"chunk":"second.","done":true}', "tokens": [10]}
+
+    store = ChatStorage(tmp_path)
+    store.create_chat("chat", "user", model="fake")
+    llm = ChunkedLLM()
+    result = ThoughtProcessor(
+        llm=llm, store=store, model="fake", user_id="user", chat_id="chat",
+        instruction="Think.",
+    ).generate(
+        message="Question", annotations=[], system_prompt=None,
+        conversation_history=None, run_id="run", turn_id="turn",
+    )
+
+    assert result == {"text": "First second.", "token_ids": [9, 10]}
+    assert llm.calls == 2
+
+
+def test_thought_process_retries_after_a_mid_stream_drop(tmp_path):
+    class DroppingLLM(FakeLLM):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def stream_complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                def interrupted():
+                    yield {"content": '{"chunk":"partial', "tokens": [9]}
+                    raise ProviderError("dropped", retryable=True)
+                return interrupted()
+            return iter([{"content": '{"chunk":"recovered","done":true}', "tokens": [10]}])
+
+    store = ChatStorage(tmp_path)
+    store.create_chat("chat", "user", model="fake")
+    events = []
+    processor = ThoughtProcessor(
+        llm=DroppingLLM(), store=store, model="fake", user_id="user",
+        chat_id="chat", instruction="Think.",
+    )
+
+    with patch("Harness.thought_processor.time.sleep"):
+        result = processor.generate(
+            message="Question", annotations=[], system_prompt=None,
+            conversation_history=None, run_id="run", turn_id="turn",
+            on_event=events.append,
+        )
+
+    assert result == {"text": "recovered", "token_ids": [10]}
+    assert {event["type"] for event in events} >= {"thought_process_delta", "thought_process_replace"}
+    records = [json.loads(line) for line in Path(store.get_llama_io_path("user", "chat")).read_text().splitlines()]
+    assert records[0]["status"] == "error"
+    assert records[0]["response"]["terminal_condition"] == "transport_drop"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 
 def single_string_schema(field: str) -> dict:
@@ -15,10 +16,33 @@ def single_string_schema(field: str) -> dict:
     }
 
 
+def chunked_string_schema() -> dict:
+    """Schema for one independently valid piece of a streamed stage."""
+    return {
+        "type": "object",
+        "properties": {
+            "chunk": {"type": "string"},
+            "done": {"type": "boolean"},
+        },
+        "required": ["chunk", "done"],
+        "additionalProperties": False,
+    }
+
+
 def structured_output_instruction(field: str) -> str:
     return (
         f'Return exactly one JSON object with one key, "{field}". '
         "Its string value must contain only the requested content."
+    )
+
+
+def chunked_output_instruction() -> str:
+    """Tell the model how to finish a stage across valid JSON envelopes."""
+    return (
+        'Return exactly one JSON object with keys "chunk" and "done". '
+        'Put only the next, non-repeated portion of the requested content in '
+        '"chunk". Set "done" to true only when the requested content is '
+        'complete; otherwise set it to false.'
     )
 
 
@@ -85,6 +109,68 @@ class JSONFieldStreamDecoder:
                 f"llama.cpp constrained JSON did not contain a string {self.field!r}"
             )
         return extracted
+
+
+class JSONChunkStreamDecoder:
+    """Decode one ``{\"chunk\": ..., \"done\": ...}`` envelope."""
+
+    def __init__(self) -> None:
+        self._chunk_decoder = JSONFieldStreamDecoder("chunk")
+
+    @property
+    def raw(self) -> str:
+        return self._chunk_decoder.raw
+
+    def feed(self, fragment: str) -> str:
+        return self._chunk_decoder.feed(fragment)
+
+    def result(self) -> tuple[str, bool]:
+        try:
+            value = json.loads(self.raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("llama.cpp returned incomplete constrained JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError("llama.cpp constrained JSON was not an object")
+        chunk = value.get("chunk")
+        done = value.get("done")
+        if not isinstance(chunk, str) or not isinstance(done, bool):
+            raise ValueError(
+                'llama.cpp constrained JSON must contain string "chunk" '
+                'and boolean "done" fields'
+            )
+        return chunk, done
+
+
+def classify_terminal_condition(
+    events: list[dict[str, Any]],
+    *,
+    error: BaseException | None = None,
+    json_valid: bool = False,
+) -> str:
+    """Normalize native completion endings into Harness-level outcomes."""
+    if error is not None and getattr(error, "retryable", False):
+        return "transport_drop"
+
+    final = events[-1] if events else {}
+    reason = " ".join(
+        str(final.get(key, ""))
+        for key in ("stop_type", "stop_reason", "reason")
+    ).lower()
+    if "context" in reason or "ctx" in reason:
+        return "context_limit"
+    if final.get("truncated") or any(
+        marker in reason
+        for marker in ("token", "length", "limit", "max")
+    ):
+        return "token_limit"
+    if error is not None:
+        return "invalid_json"
+    return "complete" if json_valid else "invalid_json"
+
+
+def increased_token_budget(current: int, baseline: int) -> int:
+    """Increase one retry budget without allowing unbounded envelope growth."""
+    return min(max(current + 16, current * 2), max(baseline * 4, baseline + 16))
 
 
 class PrefixStripper:

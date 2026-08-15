@@ -59,13 +59,41 @@
 
     <div id="result" class="result" hidden></div>
 
+    <details id="issue-report">
+        <summary>Report a problem</summary>
+        <form id="issue-form">
+            <input type="hidden" name="chat_id" value="{{ selected_chat_id }}">
+            <input type="hidden" id="issue-run-id" name="run_id">
+            <label for="issue-title">Title:</label>
+            <input id="issue-title" name="title" required placeholder="Short description of the problem">
+            <label for="issue-description">What happened?</label>
+            <textarea id="issue-description" name="description" rows="4" placeholder="What you expected, what you saw, and any useful context."></textarea>
+            <label>
+                <input type="checkbox" name="include_trace" required>
+                Attach this run's raw llama.cpp trace. It can include message and model-output text.
+            </label>
+            <button id="issue-submit" type="submit" disabled>Submit GitHub issue</button>
+            <div id="issue-status" hidden></div>
+        </form>
+    </details>
+
     <script>
         const form = document.getElementById("chat-form");
         const result = document.getElementById("result");
         const messages = document.querySelector(".messages");
+        const issueForm = document.getElementById("issue-form");
+        const issueRunId = document.getElementById("issue-run-id");
+        const issueSubmit = document.getElementById("issue-submit");
+        const issueStatus = document.getElementById("issue-status");
         let activeUserMessage = null;
         let activeThoughtContent = null;
         let activeResponseContent = null;
+
+        function makeRunReportable(runId) {
+            if (!runId) return;
+            issueRunId.value = runId;
+            issueSubmit.disabled = false;
+        }
 
         function scrollToBottom(behavior = "smooth") {
             window.scrollTo({
@@ -176,23 +204,34 @@
                         } else if (eventData.type === "annotation_delta") {
                             const annotation = document.querySelector(`#annotation-${eventData.chunk_index} pre`);
                             if (annotation) annotation.textContent += eventData.content;
+                        } else if (eventData.type === "annotation_replace") {
+                            const annotation = document.querySelector(`#annotation-${eventData.chunk_index} pre`);
+                            if (annotation) annotation.textContent = eventData.content;
                         } else if (eventData.type === "thought_process_start") {
                             startThoughtProcess();
                         } else if (eventData.type === "thought_process_delta") {
                             appendThoughtProcess(eventData.content);
+                        } else if (eventData.type === "thought_process_replace") {
+                            if (!activeThoughtContent) startThoughtProcess();
+                            activeThoughtContent.textContent = eventData.content;
                         } else if (eventData.type === "thought_process_complete") {
                             if (!activeThoughtContent) appendThoughtProcess(eventData.text);
                         } else if (eventData.type === "response_start") {
                             startAssistantResponse();
                         } else if (eventData.type === "response_delta") {
                             appendAssistantResponse(eventData.content);
+                        } else if (eventData.type === "response_replace") {
+                            if (!activeResponseContent) startAssistantResponse();
+                            activeResponseContent.textContent = eventData.content;
                         } else if (eventData.type === "response_complete") {
                             if (!activeResponseContent) appendAssistantResponse(eventData.text);
                             scrollToBottom();
                         } else if (eventData.type === "error") {
+                            makeRunReportable(eventData.run_id);
                             throw new Error(eventData.message);
                         } else if (eventData.type === "complete") {
                             const data = eventData.result;
+                            makeRunReportable(data.run_id);
                             result.textContent = `Message split into ${data.chunk_count} chunk(s), ${data.total_tokens} tokens. Generated ${data.annotation_count} annotation(s).`;
                             result.hidden = false;
                         }
@@ -203,6 +242,31 @@
                 result.hidden = false;
             } finally {
                 button.disabled = false;
+            }
+        });
+
+        issueForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            issueSubmit.disabled = true;
+            issueStatus.hidden = false;
+            issueStatus.textContent = "Creating GitHub issue…";
+            try {
+                const response = await fetch("/issues", {
+                    method: "POST",
+                    body: new FormData(issueForm),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || "Could not create GitHub issue.");
+                issueStatus.textContent = "Issue created: ";
+                const link = document.createElement("a");
+                link.href = data.url;
+                link.textContent = `#${data.number}`;
+                link.target = "_blank";
+                link.rel = "noreferrer";
+                issueStatus.append(link);
+            } catch (error) {
+                issueStatus.textContent = error.message;
+                issueSubmit.disabled = false;
             }
         });
     </script>

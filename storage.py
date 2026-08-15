@@ -554,6 +554,32 @@ class ChatStorage:
 
             return self._read_json_unlocked(path)
 
+    def list_chats(self, user_id: str) -> list[dict[str, Any]]:
+        """Return lightweight summaries for a user's saved chats."""
+        user_dir = self.root_path / str(user_id)
+        if not user_dir.exists():
+            return []
+
+        chats: list[dict[str, Any]] = []
+        for chat_dir in user_dir.iterdir():
+            if not chat_dir.is_dir():
+                continue
+
+            chat_id = chat_dir.name
+            try:
+                chat = self.get_chat(chat_id=chat_id, user_id=user_id)
+            except ChatNotFoundError:
+                continue
+
+            metadata = chat.get("session_metadata", {})
+            chats.append({
+                "chat_id": chat_id,
+                "message_count": len(chat.get("messages", [])),
+                "last_updated": metadata.get("last_updated", ""),
+            })
+
+        return sorted(chats, key=lambda chat: chat["last_updated"], reverse=True)
+
     def save_chat(
         self,
         chat: dict[str, Any],

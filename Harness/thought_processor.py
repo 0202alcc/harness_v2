@@ -6,20 +6,23 @@ import time
 from collections.abc import Callable
 from typing import Any, TypedDict
 
-from LLManager import LLManager
+from LLManager import LLManager, ProviderError
 from storage import ChatStorage, utc_now
 
 from .markers import resolve_markers
 from .state import Annotation
 from .structured_output import (
-    JSONFieldStreamDecoder,
+    JSONChunkStreamDecoder,
     PrefixStripper,
-    single_string_schema,
-    structured_output_instruction,
+    classify_terminal_condition,
+    chunked_output_instruction,
+    chunked_string_schema,
+    increased_token_budget,
 )
 
 
-THOUGHT_PROCESS_SCHEMA = single_string_schema("thought_process")
+THOUGHT_PROCESS_SCHEMA = chunked_string_schema()
+PROTOCOL_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 
 
 class ThoughtProcessResult(TypedDict):
@@ -43,6 +46,8 @@ class ThoughtProcessor:
         temperature: float = 0.4,
         markers: dict[str, str] | None = None,
         output_prefix: str | None = None,
+        completion_options: dict[str, Any] | None = None,
+        max_protocol_chunks: int = 32,
     ):
         if not instruction:
             raise ValueError("thought-process instruction cannot be empty")
@@ -57,6 +62,8 @@ class ThoughtProcessor:
         self.temperature = temperature
         self.markers = resolve_markers(markers)
         self.output_prefix = output_prefix
+        self.completion_options = dict(completion_options or {})
+        self.max_protocol_chunks = max_protocol_chunks
 
     def generate(
         self,
@@ -88,7 +95,7 @@ class ThoughtProcessor:
                 f"{json.dumps(self.output_prefix)}. Continue the reasoning immediately after it."
                 if self.output_prefix else ""
             ),
-            structured_output_instruction("thought_process"),
+            chunked_output_instruction(),
         ])
         prompt = "\n\n".join(part for part in prompt_parts if part)
         prompt_tokens = self.llm.tokenize(
@@ -98,87 +105,105 @@ class ThoughtProcessor:
             parse_special=False,
         )
 
-        started_at = utc_now()
-        started_clock = time.perf_counter()
-        request = {
-            "stream": True,
-            "prompt_token_count": len(prompt_tokens),
-            "prompt_token_sha256": hashlib.sha256(
-                json.dumps(prompt_tokens, separators=(",", ":")).encode("utf-8")
-            ).hexdigest(),
-            "n_predict": self.n_predict,
-            "cache_prompt": True,
-            "return_tokens": True,
-            "temperature": self.temperature,
-            "stop": [],
-            "json_schema": THOUGHT_PROCESS_SCHEMA,
-            "includes_annotation_instruction": False,
-        }
-
-        events: list[dict[str, Any]] = []
-        raw_content_parts: list[str] = []
-        decoder = JSONFieldStreamDecoder("thought_process")
+        generated_text = ""
+        transport_token_ids: list[int] = []
         prefix_stripper = PrefixStripper(self.output_prefix)
-        token_ids: list[int] = []
         if on_event is not None:
             on_event({"type": "thought_process_start"})
-        try:
-            for event in self.llm.stream_complete(
-                prompt=prompt_tokens,
-                model=self.model,
-                n_predict=self.n_predict,
-                cache_prompt=True,
-                return_tokens=True,
-                return_progress=True,
-                temperature=self.temperature,
-                json_schema=THOUGHT_PROCESS_SCHEMA,
-                retry_before_first_token=True,
-            ):
-                events.append(event)
-                content = event.get("content", "")
-                tokens = event.get("tokens", [])
-                if isinstance(content, str) and content:
-                    raw_content_parts.append(content)
-                    decoded_content = prefix_stripper.feed(decoder.feed(content))
-                    if decoded_content and on_event is not None:
-                        on_event({"type": "thought_process_delta", "content": decoded_content})
-                if isinstance(tokens, list):
-                    token_ids.extend(tokens)
-        except Exception as exc:
-            self._trace(
-                run_id, turn_id, request, None, started_at, started_clock,
-                "error", {"type": type(exc).__name__, "message": str(exc)},
-            )
-            raise
 
-        raw_content = "".join(raw_content_parts)
-        response = {**(events[-1] if events else {}), "content": raw_content, "tokens": token_ids}
-        try:
-            generated_text = decoder.result()
-        except ValueError as exc:
-            self._trace(
-                run_id, turn_id, request, response, started_at, started_clock,
-                "error", {"type": type(exc).__name__, "message": str(exc)},
-            )
-            raise RuntimeError(str(exc)) from exc
+        for protocol_chunk_index in range(self.max_protocol_chunks):
+            request_prompt = prompt_tokens
+            if generated_text:
+                continuation = (
+                    "\n\n[Thought process written so far]\n"
+                    f"{generated_text}\n\n"
+                    "Continue it without repeating any existing text. "
+                    + chunked_output_instruction()
+                )
+                request_prompt = self.llm.tokenize(
+                    prompt + continuation, model=self.model,
+                    add_special=True, parse_special=False,
+                )
+
+            request = {
+                "stream": True,
+                "prompt_token_count": len(request_prompt),
+                "prompt_token_sha256": hashlib.sha256(json.dumps(request_prompt, separators=(",", ":")).encode("utf-8")).hexdigest(),
+                "n_predict": self.n_predict, "cache_prompt": True,
+                "return_tokens": True, "temperature": self.temperature,
+                "stop": [], "json_schema": THOUGHT_PROCESS_SCHEMA,
+                "includes_annotation_instruction": False,
+                "protocol_chunk_index": protocol_chunk_index,
+                **getattr(self, "completion_options", {}),
+            }
+            envelope_n_predict = self.n_predict
+            for retry_index, delay in enumerate((*PROTOCOL_RETRY_DELAYS_SECONDS, None)):
+                events: list[dict[str, Any]] = []
+                raw_content_parts: list[str] = []
+                attempt_tokens: list[int] = []
+                decoder = JSONChunkStreamDecoder()
+                started_at, started_clock = utc_now(), time.perf_counter()
+                try:
+                    for event in self.llm.stream_complete(
+                        prompt=request_prompt, model=self.model,
+                        n_predict=envelope_n_predict, cache_prompt=True,
+                        return_tokens=True, return_progress=True,
+                        temperature=self.temperature, json_schema=THOUGHT_PROCESS_SCHEMA,
+                        **getattr(self, "completion_options", {}),
+                    ):
+                        events.append(event)
+                        content, tokens = event.get("content", ""), event.get("tokens", [])
+                        if isinstance(content, str) and content:
+                            raw_content_parts.append(content)
+                            visible = prefix_stripper.feed(decoder.feed(content))
+                            if visible and on_event is not None:
+                                on_event({"type": "thought_process_delta", "content": visible})
+                        if isinstance(tokens, list):
+                            attempt_tokens.extend(tokens)
+                    piece, done = decoder.result()
+                    if not done and not piece:
+                        raise RuntimeError("llama.cpp returned an empty unfinished thought-process chunk")
+                    response = {**(events[-1] if events else {}), "content": "".join(raw_content_parts), "tokens": attempt_tokens}
+                    response["decoded_thought_process"] = piece
+                    request["n_predict"] = envelope_n_predict
+                    self._trace(run_id, turn_id, request, response, started_at, started_clock, "success", None, "complete")
+                    generated_text += piece
+                    transport_token_ids.extend(attempt_tokens)
+                    if done:
+                        break
+                    break
+                except Exception as exc:
+                    terminal_condition = classify_terminal_condition(events, error=exc)
+                    response = {**(events[-1] if events else {}), "content": "".join(raw_content_parts), "tokens": attempt_tokens}
+                    request["n_predict"] = envelope_n_predict
+                    self._trace(run_id, turn_id, request, response, started_at, started_clock, "error", {"type": type(exc).__name__, "message": str(exc), "retryable": getattr(exc, "retryable", False)}, terminal_condition)
+                    if terminal_condition == "context_limit":
+                        raise RuntimeError("thought process hit the model context limit") from exc
+                    if delay is None or (isinstance(exc, ProviderError) and not exc.retryable):
+                        raise RuntimeError(str(exc)) from exc
+                    if terminal_condition in {"token_limit", "invalid_json"}:
+                        envelope_n_predict = increased_token_budget(envelope_n_predict, self.n_predict)
+                    prefix_stripper = PrefixStripper(self.output_prefix)
+                    if on_event is not None:
+                        on_event({"type": "thought_process_replace", "content": prefix_stripper.strip(generated_text)})
+                    time.sleep(delay)
+            else:
+                raise RuntimeError("llama.cpp could not complete a thought-process protocol chunk")
+            if done:
+                break
+        else:
+            raise RuntimeError("thought process exceeded the constrained protocol chunk limit")
+
         text = prefix_stripper.strip(generated_text)
-        response["decoded_thought_process"] = generated_text
-        response["stripped_thought_process"] = text
-        response["output_prefix_matched"] = (
-            not self.output_prefix or generated_text.startswith(self.output_prefix)
-        )
-        if not text or not token_ids:
+        if not text or not transport_token_ids:
             error = {
                 "type": "InvalidCompletionResponse",
                 "message": "llama.cpp did not return thought-process content and tokens",
             }
-            self._trace(run_id, turn_id, request, response, started_at, started_clock, "error", error)
             raise RuntimeError(error["message"])
+        return {"text": text, "token_ids": transport_token_ids}
 
-        self._trace(run_id, turn_id, request, response, started_at, started_clock, "success", None)
-        return {"text": text, "token_ids": token_ids}
-
-    def _trace(self, run_id, turn_id, request, response, started_at, started_clock, status, error) -> None:
+    def _trace(self, run_id, turn_id, request, response, started_at, started_clock, status, error, terminal_condition=None) -> None:
         timings = response.get("timings") if response else None
         self.store.append_llama_io(
             chat_id=self.chat_id,
@@ -202,6 +227,7 @@ class ThoughtProcessor:
                 "tokens_evaluated": timings.get("prompt_n") if isinstance(timings, dict) else None,
                 "slot_id": response.get("id_slot") if response else None,
                 "timings": timings,
+                "terminal_condition": terminal_condition,
                 "final_event": response,
             },
             started_at=started_at,

@@ -6,18 +6,21 @@ import time
 from collections.abc import Callable
 from typing import Any, TypedDict
 
-from LLManager import LLManager
+from LLManager import LLManager, ProviderError
 from storage import ChatStorage, utc_now
 from .markers import resolve_markers
 from .structured_output import (
-    JSONFieldStreamDecoder,
-    single_string_schema,
-    structured_output_instruction,
+    JSONChunkStreamDecoder,
+    classify_terminal_condition,
+    chunked_output_instruction,
+    chunked_string_schema,
+    increased_token_budget,
 )
 
 
 GEMMA_END_OF_TURN = "<turn|>"
-RESPONSE_SCHEMA = single_string_schema("response")
+RESPONSE_SCHEMA = chunked_string_schema()
+PROTOCOL_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 
 
 class ResponseResult(TypedDict):
@@ -31,7 +34,9 @@ class Responder:
     def __init__(self, *, llm: LLManager, store: ChatStorage, model: str,
                  user_id: str, chat_id: str, instruction: str,
                  n_predict: int = 512, temperature: float = 0.4,
-                 markers: dict[str, str] | None = None):
+                 markers: dict[str, str] | None = None,
+                 completion_options: dict[str, Any] | None = None,
+                 max_protocol_chunks: int = 32):
         self.llm = llm
         self.store = store
         self.model = model
@@ -41,6 +46,8 @@ class Responder:
         self.n_predict = n_predict
         self.temperature = temperature
         self.markers = resolve_markers(markers)
+        self.completion_options = dict(completion_options or {})
+        self.max_protocol_chunks = max_protocol_chunks
 
     def generate(self, *, message: str, thought_process: str,
                  system_prompt: str | None, conversation_history: str | None,
@@ -57,10 +64,7 @@ class Responder:
                 f"repeat it:\n{self.markers['thought_process']}{thought_process}"
             ),
             self.instruction,
-            (
-                'Return exactly one JSON object with one key, "response". '
-                "Its string value must contain only the reply to the user."
-            ),
+            chunked_output_instruction(),
         ])
         messages = []
         if system_prompt:
@@ -74,72 +78,100 @@ class Responder:
             formatted_prompt, model=self.model,
             add_special=False, parse_special=False,
         )
-        request = {
-            "stream": True,
-            "prompt_token_count": len(prompt_tokens),
-            "prompt_token_sha256": hashlib.sha256(
-                json.dumps(prompt_tokens, separators=(",", ":")).encode()
-            ).hexdigest(),
-            "n_predict": self.n_predict,
-            "cache_prompt": True,
-            "return_tokens": True,
-            "temperature": self.temperature,
-            "stop": [GEMMA_END_OF_TURN],
-            "json_schema": RESPONSE_SCHEMA,
-            "includes_annotation_instruction": False,
-            "uses_chat_template": True,
-        }
-        started_at = utc_now()
-        started_clock = time.perf_counter()
-        events: list[dict[str, Any]] = []
-        raw_content_parts: list[str] = []
-        decoder = JSONFieldStreamDecoder("response")
-        tokens: list[int] = []
+        generated_text = ""
+        transport_tokens: list[int] = []
         if on_event is not None:
             on_event({"type": "response_start"})
-        try:
-            for event in self.llm.stream_complete(
-                prompt=prompt_tokens, model=self.model,
-                n_predict=self.n_predict, cache_prompt=True,
-                return_tokens=True, temperature=self.temperature,
-                return_progress=True,
-                stop=[GEMMA_END_OF_TURN],
-                json_schema=RESPONSE_SCHEMA,
-                retry_before_first_token=True,
-            ):
-                events.append(event)
-                content = event.get("content", "")
-                event_tokens = event.get("tokens", [])
-                if isinstance(content, str) and content:
-                    raw_content_parts.append(content)
-                    decoded_content = decoder.feed(content)
-                    if decoded_content and on_event is not None:
-                        on_event({"type": "response_delta", "content": decoded_content})
-                if isinstance(event_tokens, list):
-                    tokens.extend(event_tokens)
-        except Exception as exc:
-            self._trace(run_id, turn_id, request, None, started_at, started_clock,
-                        "error", {"type": type(exc).__name__, "message": str(exc)})
-            raise
+        for protocol_chunk_index in range(self.max_protocol_chunks):
+            request_prompt = prompt_tokens
+            if generated_text:
+                continuation = (
+                    "\n\n[Reply written so far]\n"
+                    f"{generated_text}\n\n"
+                    "Continue the reply without repeating any existing text. "
+                    + chunked_output_instruction()
+                )
+                continuation_messages = list(messages)
+                continuation_messages[-1] = {
+                    "role": "user",
+                    "content": user_parts[0] if len(user_parts) == 1 else "\n\n".join(user_parts) + continuation,
+                }
+                continuation_prompt = self.llm.apply_chat_template(continuation_messages, model=self.model)
+                request_prompt = self.llm.tokenize(continuation_prompt, model=self.model, add_special=False, parse_special=False)
 
-        raw_content = "".join(raw_content_parts)
-        response = {**(events[-1] if events else {}), "content": raw_content, "tokens": tokens}
-        try:
-            text = decoder.result()
-        except ValueError as exc:
-            self._trace(run_id, turn_id, request, response, started_at, started_clock,
-                        "error", {"type": type(exc).__name__, "message": str(exc)})
-            raise RuntimeError(str(exc)) from exc
-        response["decoded_response"] = text
-        if not text.strip() or not tokens:
+            request = {
+                "stream": True, "prompt_token_count": len(request_prompt),
+                "prompt_token_sha256": hashlib.sha256(json.dumps(request_prompt, separators=(",", ":")).encode()).hexdigest(),
+                "n_predict": self.n_predict, "cache_prompt": True,
+                "return_tokens": True, "temperature": self.temperature,
+                "stop": [GEMMA_END_OF_TURN], "json_schema": RESPONSE_SCHEMA,
+                "includes_annotation_instruction": False, "uses_chat_template": True,
+                "protocol_chunk_index": protocol_chunk_index,
+                **getattr(self, "completion_options", {}),
+            }
+            envelope_n_predict = self.n_predict
+            for retry_index, delay in enumerate((*PROTOCOL_RETRY_DELAYS_SECONDS, None)):
+                events: list[dict[str, Any]] = []
+                raw_content_parts: list[str] = []
+                attempt_tokens: list[int] = []
+                decoder = JSONChunkStreamDecoder()
+                started_at, started_clock = utc_now(), time.perf_counter()
+                try:
+                    for event in self.llm.stream_complete(
+                        prompt=request_prompt, model=self.model,
+                        n_predict=envelope_n_predict, cache_prompt=True,
+                        return_tokens=True, temperature=self.temperature,
+                        return_progress=True, stop=[GEMMA_END_OF_TURN],
+                        json_schema=RESPONSE_SCHEMA, **getattr(self, "completion_options", {}),
+                    ):
+                        events.append(event)
+                        content, event_tokens = event.get("content", ""), event.get("tokens", [])
+                        if isinstance(content, str) and content:
+                            raw_content_parts.append(content)
+                            decoded_content = decoder.feed(content)
+                            if decoded_content and on_event is not None:
+                                on_event({"type": "response_delta", "content": decoded_content})
+                        if isinstance(event_tokens, list):
+                            attempt_tokens.extend(event_tokens)
+                    piece, done = decoder.result()
+                    if not done and not piece:
+                        raise RuntimeError("llama.cpp returned an empty unfinished response chunk")
+                    response = {**(events[-1] if events else {}), "content": "".join(raw_content_parts), "tokens": attempt_tokens, "decoded_response": piece}
+                    request["n_predict"] = envelope_n_predict
+                    self._trace(run_id, turn_id, request, response, started_at, started_clock, "success", None, "complete")
+                    generated_text += piece
+                    transport_tokens.extend(attempt_tokens)
+                    if done:
+                        break
+                    break
+                except Exception as exc:
+                    terminal_condition = classify_terminal_condition(events, error=exc)
+                    response = {**(events[-1] if events else {}), "content": "".join(raw_content_parts), "tokens": attempt_tokens}
+                    request["n_predict"] = envelope_n_predict
+                    self._trace(run_id, turn_id, request, response, started_at, started_clock, "error", {"type": type(exc).__name__, "message": str(exc), "retryable": getattr(exc, "retryable", False)}, terminal_condition)
+                    if terminal_condition == "context_limit":
+                        raise RuntimeError("response hit the model context limit") from exc
+                    if delay is None or (isinstance(exc, ProviderError) and not exc.retryable):
+                        raise RuntimeError(str(exc)) from exc
+                    if terminal_condition in {"token_limit", "invalid_json"}:
+                        envelope_n_predict = increased_token_budget(envelope_n_predict, self.n_predict)
+                    if on_event is not None:
+                        on_event({"type": "response_replace", "content": generated_text})
+                    time.sleep(delay)
+            else:
+                raise RuntimeError("llama.cpp could not complete a response protocol chunk")
+            if done:
+                break
+        else:
+            raise RuntimeError("response exceeded the constrained protocol chunk limit")
+
+        text = generated_text
+        if not text.strip() or not transport_tokens:
             error = {"type": "InvalidCompletionResponse", "message": "llama.cpp did not return response content and tokens"}
-            self._trace(run_id, turn_id, request, response, started_at, started_clock, "error", error)
             raise RuntimeError(error["message"])
+        return {"text": text, "token_ids": transport_tokens}
 
-        self._trace(run_id, turn_id, request, response, started_at, started_clock, "success", None)
-        return {"text": text, "token_ids": tokens}
-
-    def _trace(self, run_id, turn_id, request, response, started_at, started_clock, status, error):
+    def _trace(self, run_id, turn_id, request, response, started_at, started_clock, status, error, terminal_condition=None):
         timings = response.get("timings") if response else None
         self.store.append_llama_io(
             chat_id=self.chat_id, user_id=self.user_id, turn_id=turn_id,
@@ -155,6 +187,7 @@ class Responder:
                 "tokens_evaluated": timings.get("prompt_n") if isinstance(timings, dict) else None,
                 "slot_id": response.get("id_slot") if response else None,
                 "timings": timings,
+                "terminal_condition": terminal_condition,
                 "final_event": response,
             },
             started_at=started_at, finished_at=utc_now(),

@@ -20,8 +20,8 @@ class FakeLLM:
 
     def stream_complete(self, **kwargs):
         self.complete_kwargs = kwargs
-        yield {"content": '{"response":"Here is', "tokens": [4], "timings": {"cache_n": 0, "prompt_n": 3}}
-        yield {"content": ' my answer."}', "tokens": [5], "timings": {"cache_n": 0, "prompt_n": 3}}
+        yield {"content": '{"chunk":"Here is', "tokens": [4], "timings": {"cache_n": 0, "prompt_n": 3}}
+        yield {"content": ' my answer.","done":true}', "tokens": [5], "timings": {"cache_n": 0, "prompt_n": 3}}
 
 
 def test_response_uses_message_and_thought_without_annotation_instruction(tmp_path):
@@ -59,8 +59,8 @@ def test_response_uses_message_and_thought_without_annotation_instruction(tmp_pa
     assert llm.complete_kwargs["stop"] == ["<turn|>"]
     assert llm.complete_kwargs["json_schema"] == {
         "type": "object",
-        "properties": {"response": {"type": "string"}},
-        "required": ["response"],
+        "properties": {"chunk": {"type": "string"}, "done": {"type": "boolean"}},
+        "required": ["chunk", "done"],
         "additionalProperties": False,
     }
     assert [event["type"] for event in events] == [
@@ -71,5 +71,5 @@ def test_response_uses_message_and_thought_without_annotation_instruction(tmp_pa
     [record] = [json.loads(line) for line in Path(store.get_llama_io_path("user", "chat")).read_text().splitlines()]
     assert record["node"] == "generate_final_response"
     assert record["request"]["includes_annotation_instruction"] is False
-    assert record["response"]["generated_content"] == '{"response":"Here is my answer."}'
+    assert record["response"]["generated_content"] == '{"chunk":"Here is my answer.","done":true}'
     assert record["response"]["decoded_response"] == "Here is my answer."

@@ -11,6 +11,7 @@ class FakeLLM:
     def __init__(self, actions):
         self.actions = list(actions)
         self.prompts = []
+        self.completion_kwargs = []
         self.health_checks = 0
 
     def tokenize(self, text, **kwargs):
@@ -18,6 +19,7 @@ class FakeLLM:
 
     def stream_complete(self, *, prompt, **kwargs):
         self.prompts.append(list(prompt))
+        self.completion_kwargs.append(kwargs)
         action = self.actions.pop(0)
         if isinstance(action, Exception):
             raise action
@@ -30,7 +32,7 @@ class FakeLLM:
         return {"ok": True}
 
 
-def stream_event(content, token, *, final=False, cache_n=0, prompt_n=4):
+def stream_event(content, token, *, final=False, cache_n=0, prompt_n=4, **metadata):
     return {
         "content": content,
         "tokens": [] if final else [token],
@@ -40,6 +42,7 @@ def stream_event(content, token, *, final=False, cache_n=0, prompt_n=4):
             "cache_n": cache_n,
             "prompt_n": prompt_n,
         },
+        **metadata,
     }
 
 
@@ -79,7 +82,7 @@ def test_normal_streaming_persists_one_successful_completion(tmp_path):
     annotator, llm, store = make_annotator(
         tmp_path,
         [[
-            stream_event('{"annotation":"Hello"}', 10),
+            stream_event('{"chunk":"Hello","done":true}', 10),
             stream_event("", 11, final=True),
         ]],
     )
@@ -102,8 +105,8 @@ def test_next_chunk_uses_compact_marker_text_not_generated_json_tokens(tmp_path)
     annotator, llm, _store = make_annotator(
         tmp_path,
         [
-            [stream_event('{"annotation":"Hello"}', 10)],
-            [stream_event('{"annotation":"Again"}', 11)],
+            [stream_event('{"chunk":"Hello","done":true}', 10)],
+            [stream_event('{"chunk":"Again","done":true}', 11)],
         ],
     )
 
@@ -125,7 +128,7 @@ def test_connection_drop_before_tokens_retries_original_prompt(tmp_path):
         [
             ProviderError("dropped", retryable=True),
             [
-                stream_event('{"annotation":"Recovered"}', 10),
+                stream_event('{"chunk":"Recovered","done":true}', 10),
                 stream_event("", 0, final=True),
             ],
         ],
@@ -143,9 +146,9 @@ def test_connection_drop_before_tokens_retries_original_prompt(tmp_path):
     assert succeeded["request"]["attempt"]["kind"] == "initial_retry"
 
 
-def test_mid_stream_drop_continues_from_received_token_prefix(tmp_path):
+def test_mid_stream_drop_retries_only_the_current_json_envelope(tmp_path):
     def interrupted_stream():
-        yield stream_event('{"annotation":"First', 10)
+        yield stream_event('{"chunk":"First', 10)
         raise ProviderError("dropped", retryable=True)
 
     annotator, llm, store = make_annotator(
@@ -153,7 +156,7 @@ def test_mid_stream_drop_continues_from_received_token_prefix(tmp_path):
         [
             interrupted_stream,
             [
-                stream_event(' second"}', 11),
+                stream_event('{"chunk":"First second","done":true}', 11),
                 stream_event("", 0, final=True),
             ],
         ],
@@ -163,11 +166,65 @@ def test_mid_stream_drop_continues_from_received_token_prefix(tmp_path):
         result = run_annotation(annotator)
 
     assert result["annotation"]["text"] == "First second"
-    assert result["annotation"]["token_ids"] == [10, 11]
-    assert llm.prompts == [[1, 2, 4, 3], [1, 2, 4, 3, 10]]
-    assert llm.health_checks == 1
+    assert result["annotation"]["token_ids"] == [11]
+    assert llm.prompts == [[1, 2, 4, 3], [1, 2, 4, 3]]
+    assert llm.health_checks == 0
 
     failed, succeeded = read_trace(store)
     assert failed["response"]["generated_token_ids"] == [10]
-    assert succeeded["request"]["attempt"]["kind"] == "continuation"
-    assert succeeded["request"]["json_schema"]["required"] == ["annotation"]
+    assert succeeded["request"]["attempt"]["kind"] == "initial_retry"
+    assert succeeded["request"]["json_schema"]["required"] == ["chunk", "done"]
+
+
+def test_annotation_continues_after_a_complete_unfinished_envelope(tmp_path):
+    annotator, llm, _store = make_annotator(
+        tmp_path,
+        [
+            [stream_event('{"chunk":"First ","done":false}', 10)],
+            [stream_event('{"chunk":"second","done":true}', 11)],
+        ],
+    )
+
+    result = run_annotation(annotator)
+
+    assert result["annotation"]["text"] == "First second"
+    assert result["annotation"]["token_ids"] == [10, 11]
+    assert len(llm.prompts) == 2
+
+
+def test_incomplete_normal_stream_is_traced_as_invalid_json_then_retried(tmp_path):
+    annotator, _llm, store = make_annotator(
+        tmp_path,
+        [
+            [stream_event('{"chunk":"partial', 10)],
+            [stream_event('{"chunk":"recovered","done":true}', 11)],
+        ],
+    )
+
+    with patch("Harness.annotator.time.sleep"):
+        result = run_annotation(annotator)
+
+    assert result["annotation"]["text"] == "recovered"
+    failed, succeeded = read_trace(store)
+    assert failed["status"] == "error"
+    assert failed["response"]["terminal_condition"] == "invalid_json"
+    assert succeeded["status"] == "success"
+
+
+def test_annotation_token_cutoff_retries_current_envelope_with_more_budget(tmp_path):
+    annotator, llm, store = make_annotator(
+        tmp_path,
+        [
+            [stream_event('{"chunk":"partial', 10, truncated=True, stop_type="token_limit")],
+            [stream_event('{"chunk":"recovered","done":true}', 11)],
+        ],
+    )
+
+    with patch("Harness.annotator.time.sleep"):
+        result = run_annotation(annotator)
+
+    assert result["annotation"]["text"] == "recovered"
+    assert llm.completion_kwargs[0]["n_predict"] == 4
+    assert llm.completion_kwargs[1]["n_predict"] == 20
+    failed, _succeeded = read_trace(store)
+    assert failed["response"]["terminal_condition"] == "token_limit"

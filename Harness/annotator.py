@@ -15,9 +15,11 @@ from .chunker import Chunk
 from .markers import resolve_markers
 from .state import Annotation
 from .structured_output import (
-    JSONFieldStreamDecoder,
-    single_string_schema,
-    structured_output_instruction,
+    JSONChunkStreamDecoder,
+    classify_terminal_condition,
+    chunked_output_instruction,
+    chunked_string_schema,
+    increased_token_budget,
 )
 
 
@@ -30,7 +32,7 @@ from .structured_output import (
 # + SOURCE_MARKER + C1 + ANNOTATION_MARKER + A1
 # + ...
 #
-ANNOTATION_SCHEMA = single_string_schema("annotation")
+ANNOTATION_SCHEMA = chunked_string_schema()
 
 # There are three initial attempts: the original request plus these retries.
 INITIAL_RETRY_DELAYS_SECONDS = (0.25, 1.0)
@@ -70,6 +72,8 @@ class Annotator:
         n_predict: int = 64,
         temperature: float = 0.4,
         markers: dict[str, str] | None = None,
+        completion_options: dict[str, Any] | None = None,
+        max_protocol_chunks: int = 32,
     ):
         if not instruction:
             raise ValueError(
@@ -86,6 +90,8 @@ class Annotator:
 
         self.n_predict = n_predict
         self.temperature = temperature
+        self.completion_options = dict(completion_options or {})
+        self.max_protocol_chunks = max_protocol_chunks
 
         # These are static, so tokenize them once rather than
         # making another /tokenize request for every chunk.
@@ -123,7 +129,7 @@ class Annotator:
         if conversation_history:
             initial_parts.append(conversation_history)
         initial_parts.append(self.instruction)
-        initial_parts.append(structured_output_instruction("annotation"))
+        initial_parts.append(chunked_output_instruction())
         initial_instruction = "\n\n".join(initial_parts)
 
         return self.llm.tokenize(
@@ -178,185 +184,123 @@ class Annotator:
                 "chunk_text": chunk["text"],
             })
 
-        decoder = JSONFieldStreamDecoder("annotation")
+        annotation_text = ""
         annotation_tokens: list[int] = []
-        initial_retry_index = 0
-        continuation_retry_index = 0
+        continuation_tokens = self.llm.tokenize(
+            "\n\nContinue the annotation above without repeating it. "
+            + chunked_output_instruction(),
+            model=self.model,
+            add_special=False,
+            parse_special=False,
+        )
 
-        while True:
-            request_prompt = prompt_tokens + annotation_tokens
-            remaining_tokens = self.n_predict - len(annotation_tokens)
+        for protocol_chunk_index in range(self.max_protocol_chunks):
+            prior_text_tokens = self.llm.tokenize(
+                annotation_text,
+                model=self.model,
+                add_special=False,
+                parse_special=False,
+            ) if annotation_text else []
+            request_prompt = prompt_tokens + prior_text_tokens
+            if annotation_text:
+                request_prompt += continuation_tokens
 
-            if remaining_tokens <= 0:
-                break
-
-            received_this_attempt = False
-            attempt_events: list[dict[str, Any]] = []
-            attempt_content_parts: list[str] = []
-            attempt_tokens: list[int] = []
-            started_at = utc_now()
-            started_clock = time.perf_counter()
-            attempt_kind = (
-                "initial"
-                if not annotation_tokens
-                and initial_retry_index == 0
-                else (
-                    "initial_retry"
-                    if not annotation_tokens
-                    else "continuation"
-                )
-            )
-
-            try:
-                for event in self.llm.stream_complete(
-                    prompt=request_prompt,
-                    model=self.model,
-                    n_predict=remaining_tokens,
-                    cache_prompt=True,
-                    return_tokens=True,
-                    return_progress=True,
-                    temperature=self.temperature,
-                    json_schema=ANNOTATION_SCHEMA,
-                ):
-                    attempt_events.append(event)
-                    content = event.get("content", "")
-                    tokens = event.get("tokens", [])
-
-                    if (
-                        isinstance(content, str)
-                        and content
-                        and not (
-                            isinstance(tokens, list)
-                            and tokens
-                        )
+            envelope_n_predict = self.n_predict
+            for retry_index, delay in enumerate((*INITIAL_RETRY_DELAYS_SECONDS, None)):
+                decoder = JSONChunkStreamDecoder()
+                attempt_events: list[dict[str, Any]] = []
+                attempt_content_parts: list[str] = []
+                attempt_tokens: list[int] = []
+                emitted_text = ""
+                started_at = utc_now()
+                started_clock = time.perf_counter()
+                try:
+                    for event in self.llm.stream_complete(
+                        prompt=request_prompt,
+                        model=self.model,
+                        n_predict=envelope_n_predict,
+                        cache_prompt=True,
+                        return_tokens=True,
+                        return_progress=True,
+                        temperature=self.temperature,
+                        json_schema=ANNOTATION_SCHEMA,
+                        **getattr(self, "completion_options", {}),
                     ):
-                        raise RuntimeError(
-                            "llama.cpp streamed annotation content "
-                            "without raw token IDs; cannot safely "
-                            "resume after a connection drop"
+                        attempt_events.append(event)
+                        content = event.get("content", "")
+                        tokens = event.get("tokens", [])
+                        if isinstance(tokens, list):
+                            attempt_tokens.extend(tokens)
+                        if isinstance(content, str) and content:
+                            attempt_content_parts.append(content)
+                            decoded_content = decoder.feed(content)
+                            emitted_text += decoded_content
+                            if decoded_content and on_event is not None:
+                                on_event({"type": "annotation_delta", "chunk_index": chunk["index"], "content": decoded_content})
+
+                    piece, done = decoder.result()
+                    if not done and not piece:
+                        raise RuntimeError("llama.cpp returned an empty unfinished annotation chunk")
+                    self._trace_completion(
+                        run_id=run_id, turn_id=turn_id, chunk_index=chunk["index"],
+                        prompt_tokens=request_prompt, n_predict=envelope_n_predict,
+                        attempt_kind=(
+                            "initial_retry" if protocol_chunk_index == 0 and retry_index
+                            else "initial" if protocol_chunk_index == 0
+                            else "protocol_continuation"
+                        ),
+                        initial_retry_index=retry_index if protocol_chunk_index == 0 else 0,
+                        continuation_retry_index=retry_index if protocol_chunk_index else 0,
+                        started_at=started_at, started_clock=started_clock,
+                        events=attempt_events, generated_tokens=attempt_tokens,
+                        generated_content="".join(attempt_content_parts), status="success", error=None,
+                        protocol_chunk_index=protocol_chunk_index,
+                        terminal_condition="complete",
+                    )
+                    annotation_text += piece
+                    annotation_tokens.extend(attempt_tokens)
+                    if done:
+                        break
+                    break
+                except Exception as exc:
+                    terminal_condition = classify_terminal_condition(
+                        attempt_events, error=exc,
+                    )
+                    self._trace_completion(
+                        run_id=run_id, turn_id=turn_id, chunk_index=chunk["index"],
+                        prompt_tokens=request_prompt, n_predict=envelope_n_predict,
+                        attempt_kind="protocol_retry",
+                        initial_retry_index=retry_index if protocol_chunk_index == 0 else 0,
+                        continuation_retry_index=retry_index if protocol_chunk_index else 0,
+                        started_at=started_at, started_clock=started_clock,
+                        events=attempt_events, generated_tokens=attempt_tokens,
+                        generated_content="".join(attempt_content_parts), status="error",
+                        error={"type": type(exc).__name__, "message": str(exc), "retryable": getattr(exc, "retryable", False)},
+                        protocol_chunk_index=protocol_chunk_index,
+                        terminal_condition=terminal_condition,
+                    )
+                    if terminal_condition == "context_limit":
+                        raise RuntimeError("annotation hit the model context limit") from exc
+                    if not isinstance(exc, (ProviderError, ValueError)) and not isinstance(exc, RuntimeError):
+                        raise RuntimeError(str(exc)) from exc
+                    if isinstance(exc, ProviderError) and not exc.retryable:
+                        raise RuntimeError(str(exc)) from exc
+                    if delay is None:
+                        raise RuntimeError(str(exc)) from exc
+                    if terminal_condition in {"token_limit", "invalid_json"}:
+                        envelope_n_predict = increased_token_budget(
+                            envelope_n_predict, self.n_predict,
                         )
-
-                    if isinstance(tokens, list) and tokens:
-                        annotation_tokens.extend(tokens)
-                        attempt_tokens.extend(tokens)
-                        received_this_attempt = True
-
-                    if isinstance(content, str) and content:
-                        decoded_content = decoder.feed(content)
-                        attempt_content_parts.append(content)
-                        received_this_attempt = True
-                        if decoded_content and on_event is not None:
-                            on_event({
-                                "type": "annotation_delta",
-                                "chunk_index": chunk["index"],
-                                "content": decoded_content,
-                            })
-
-                self._trace_completion(
-                    run_id=run_id,
-                    turn_id=turn_id,
-                    chunk_index=chunk["index"],
-                    prompt_tokens=request_prompt,
-                    n_predict=remaining_tokens,
-                    attempt_kind=attempt_kind,
-                    initial_retry_index=initial_retry_index,
-                    continuation_retry_index=continuation_retry_index,
-                    started_at=started_at,
-                    started_clock=started_clock,
-                    events=attempt_events,
-                    generated_tokens=attempt_tokens,
-                    generated_content="".join(attempt_content_parts),
-                    status="success",
-                    error=None,
-                )
-                break
-
-            except ProviderError as exc:
-                self._trace_completion(
-                    run_id=run_id,
-                    turn_id=turn_id,
-                    chunk_index=chunk["index"],
-                    prompt_tokens=request_prompt,
-                    n_predict=remaining_tokens,
-                    attempt_kind=attempt_kind,
-                    initial_retry_index=initial_retry_index,
-                    continuation_retry_index=continuation_retry_index,
-                    started_at=started_at,
-                    started_clock=started_clock,
-                    events=attempt_events,
-                    generated_tokens=attempt_tokens,
-                    generated_content="".join(attempt_content_parts),
-                    status="error",
-                    error={
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                        "retryable": exc.retryable,
-                    },
-                )
-                if not exc.retryable:
-                    raise
-
-                # No output reached Harness, so the original request can be
-                # retried unchanged without affecting the browser display.
-                if not annotation_tokens and not received_this_attempt:
-                    if initial_retry_index >= len(
-                        INITIAL_RETRY_DELAYS_SECONDS
-                    ):
-                        raise
-
-                    delay = INITIAL_RETRY_DELAYS_SECONDS[
-                        initial_retry_index
-                    ]
-                    initial_retry_index += 1
+                    if emitted_text and on_event is not None:
+                        on_event({"type": "annotation_replace", "chunk_index": chunk["index"], "content": annotation_text})
                     time.sleep(delay)
-                    continue
+            else:
+                raise RuntimeError("llama.cpp could not complete an annotation protocol chunk")
 
-                # We have a partial annotation. Check the server first, then
-                # continue from its exact raw token prefix in a new request.
-                if continuation_retry_index >= len(
-                    CONTINUATION_RETRY_DELAYS_SECONDS
-                ):
-                    raise
-
-                delay = CONTINUATION_RETRY_DELAYS_SECONDS[
-                    continuation_retry_index
-                ]
-                continuation_retry_index += 1
-                time.sleep(delay)
-
-                health = self.llm.health()
-                if not health.get("ok"):
-                    # A failed health check consumes this bounded retry; the
-                    # next pass will wait longer before checking again.
-                    continue
-
-            except Exception as exc:
-                self._trace_completion(
-                    run_id=run_id,
-                    turn_id=turn_id,
-                    chunk_index=chunk["index"],
-                    prompt_tokens=request_prompt,
-                    n_predict=remaining_tokens,
-                    attempt_kind=attempt_kind,
-                    initial_retry_index=initial_retry_index,
-                    continuation_retry_index=continuation_retry_index,
-                    started_at=started_at,
-                    started_clock=started_clock,
-                    events=attempt_events,
-                    generated_tokens=attempt_tokens,
-                    generated_content="".join(attempt_content_parts),
-                    status="error",
-                    error={
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                    },
-                )
-                raise
-
-        try:
-            annotation_text = decoder.result()
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
+            if done:
+                break
+        else:
+            raise RuntimeError("annotation exceeded the constrained protocol chunk limit")
 
         print(
             "[Annotator] "
@@ -425,6 +369,8 @@ class Annotator:
         generated_content: str,
         status: str,
         error: dict[str, Any] | None,
+        protocol_chunk_index: int = 0,
+        terminal_condition: str | None = None,
     ) -> None:
         """Persist one native llama.cpp completion attempt as JSONL."""
 
@@ -475,6 +421,7 @@ class Annotator:
             "timings": timings,
             "stop_type": last_value("stop_type"),
             "truncated": last_value("truncated"),
+            "terminal_condition": terminal_condition,
             "final_event": events[-1] if events else None,
         }
 
@@ -499,11 +446,13 @@ class Annotator:
                 "temperature": self.temperature,
                 "stop": [],
                 "json_schema": ANNOTATION_SCHEMA,
+                **getattr(self, "completion_options", {}),
                 "attempt": {
                     "kind": attempt_kind,
                     "initial_retry_index": initial_retry_index,
                     "continuation_retry_index": continuation_retry_index,
                 },
+                "protocol_chunk_index": protocol_chunk_index,
             },
             response=response,
             started_at=started_at,

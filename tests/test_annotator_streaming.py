@@ -88,6 +88,7 @@ def test_normal_streaming_persists_one_successful_completion(tmp_path):
 
     assert result["annotation"]["text"] == "Hello"
     assert result["annotation"]["token_ids"] == [10]
+    assert result["thinking_token_ids"] == [1, 2, 4, 3, len("Hello")]
     assert llm.prompts == [[1, 2, 4, 3]]
 
     [record] = read_trace(store)
@@ -95,6 +96,27 @@ def test_normal_streaming_persists_one_successful_completion(tmp_path):
     assert record["request"]["attempt"]["kind"] == "initial"
     assert record["response"]["tokens_cached"] == 0
     assert record["response"]["tokens_evaluated"] == 4
+
+
+def test_next_chunk_uses_compact_marker_text_not_generated_json_tokens(tmp_path):
+    annotator, llm, _store = make_annotator(
+        tmp_path,
+        [
+            [stream_event('{"annotation":"Hello"}', 10)],
+            [stream_event('{"annotation":"Again"}', 11)],
+        ],
+    )
+
+    first = run_annotation(annotator)
+    annotator.annotate(
+        thinking_token_ids=first["thinking_token_ids"],
+        chunk={"index": 1, "token_ids": [4], "text": "source"},
+        run_id="run",
+        turn_id="turn",
+    )
+
+    assert llm.prompts[1] == [1, 2, 4, 3, len("Hello"), 2, 4, 3]
+    assert 10 not in llm.prompts[1]
 
 
 def test_connection_drop_before_tokens_retries_original_prompt(tmp_path):

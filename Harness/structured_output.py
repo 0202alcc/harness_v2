@@ -85,3 +85,33 @@ class JSONFieldStreamDecoder:
                 f"llama.cpp constrained JSON did not contain a string {self.field!r}"
             )
         return extracted
+
+
+class PrefixStripper:
+    """Hide an expected generated prefix while preserving live streaming."""
+
+    def __init__(self, prefix: str | None) -> None:
+        self.prefix = prefix or ""
+        self._buffer = ""
+        self.matched = not self.prefix
+
+    def feed(self, content: str) -> str:
+        if self.matched:
+            return content
+        self._buffer += content
+        if self.prefix.startswith(self._buffer):
+            return ""
+        if self._buffer.startswith(self.prefix):
+            self.matched = True
+            remainder = self._buffer[len(self.prefix):]
+            self._buffer = ""
+            return remainder
+
+        # Preserve output if the model declines to follow the prefix cue.
+        self.matched = True
+        remainder = self._buffer
+        self._buffer = ""
+        return remainder
+
+    def strip(self, content: str) -> str:
+        return content.removeprefix(self.prefix)

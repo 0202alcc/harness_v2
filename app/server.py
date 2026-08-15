@@ -49,6 +49,8 @@ def create_app(
     annotation_instruction: str,
     thought_process_instruction: str,
     response_instruction: str,
+    markers: dict[str, str] | None = None,
+    thought_process_output_prefix: str | None = None,
 ) -> FastAPI:
     """
     Construct the FastAPI application and inject the application's
@@ -73,6 +75,8 @@ def create_app(
         annotation_instruction=annotation_instruction,
         thought_process_instruction=thought_process_instruction,
         response_instruction=response_instruction,
+        markers=markers,
+        thought_process_output_prefix=thought_process_output_prefix,
     )
 
     # ---------------------------------------------------------
@@ -219,6 +223,8 @@ def run_server(
     annotation_instruction: str,
     thought_process_instruction: str,
     response_instruction: str,
+    markers: dict[str, str] | None = None,
+    thought_process_output_prefix: str | None = None,
 ) -> None:
     """
     Start the web interface for one Harness chat session.
@@ -243,6 +249,8 @@ def run_server(
         annotation_instruction=annotation_instruction,
         thought_process_instruction=thought_process_instruction,
         response_instruction=response_instruction,
+        markers=markers,
+        thought_process_output_prefix=thought_process_output_prefix,
     )
 
     uvicorn.run(

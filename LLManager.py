@@ -1,5 +1,8 @@
 from __future__ import annotations
 import json
+import logging
+import time
+from collections.abc import Callable
 from typing import Any, Iterator, Sequence
 import httpx
 
@@ -14,6 +17,9 @@ class ProviderError(RuntimeError):
     ):
         super().__init__(message)
         self.retryable = retryable
+
+
+SAFE_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 
 class Provider:
     """
@@ -108,7 +114,8 @@ class LlamaCppProvider(Provider):
         except httpx.HTTPError as exc:
             raise ProviderError(
                 f"Could not reach llama.cpp server at "
-                f"{self.base_url}{path}: {exc}"
+                f"{self.base_url}{path}: {exc}",
+                retryable=True,
             ) from exc
 
         if response.is_error:
@@ -120,7 +127,8 @@ class LlamaCppProvider(Provider):
             raise ProviderError(
                 f"llama.cpp request failed "
                 f"({response.status_code} {method} {path}): "
-                f"{detail}"
+                f"{detail}",
+                retryable=response.status_code in {408, 429, 500, 502, 503, 504},
             )
 
         if not response.content:
@@ -541,6 +549,23 @@ class LLManager:
     ):
         self.provider = provider
 
+    def _retry_safe_setup(self, operation: str, call: Callable[[], Any]) -> Any:
+        """Retry idempotent requests that occur before generation begins."""
+        for attempt, delay in enumerate((*SAFE_RETRY_DELAYS_SECONDS, None)):
+            try:
+                return call()
+            except ProviderError as exc:
+                if not exc.retryable or delay is None:
+                    raise
+                logging.warning(
+                    "llama.cpp %s failed before generation; retrying in %.2fs (%d/%d)",
+                    operation,
+                    delay,
+                    attempt + 1,
+                    len(SAFE_RETRY_DELAYS_SECONDS),
+                )
+                time.sleep(delay)
+
     def health(self):
         return self.provider.health()
 
@@ -557,19 +582,23 @@ class LLManager:
         return self.provider.model_props(model, **kwargs)
 
     def tokenize(self, text: str, model: str, **kwargs):
-        return self.provider.tokenize(text, model, **kwargs)
+        return self._retry_safe_setup(
+            "tokenize", lambda: self.provider.tokenize(text, model, **kwargs)
+        )
 
     def detokenize(self, token_ids: Sequence[int], model: str):
-        return self.provider.detokenize(token_ids, model)
+        return self._retry_safe_setup(
+            "detokenize", lambda: self.provider.detokenize(token_ids, model)
+        )
 
     def apply_chat_template(
         self,
         messages: list[dict[str, Any]],
         model: str,
     ):
-        return self.provider.apply_chat_template(
-            messages,
-            model,
+        return self._retry_safe_setup(
+            "apply chat template",
+            lambda: self.provider.apply_chat_template(messages, model),
         )
 
     def prefill(self, prompt, model: str, **kwargs):
@@ -586,12 +615,38 @@ class LLManager:
             **kwargs,
         )
 
-    def stream_complete(self, prompt, model: str, **kwargs):
-        return self.provider.stream_complete(
-            prompt,
-            model,
-            **kwargs,
-        )
+    def stream_complete(
+        self,
+        prompt,
+        model: str,
+        *,
+        retry_before_first_token: bool = False,
+        **kwargs,
+    ):
+        if not retry_before_first_token:
+            return self.provider.stream_complete(prompt, model, **kwargs)
+
+        def stream_with_retry():
+            for attempt, delay in enumerate((*SAFE_RETRY_DELAYS_SECONDS, None)):
+                received_output = False
+                try:
+                    for event in self.provider.stream_complete(prompt, model, **kwargs):
+                        if event.get("content") or event.get("tokens"):
+                            received_output = True
+                        yield event
+                    return
+                except ProviderError as exc:
+                    if received_output or not exc.retryable or delay is None:
+                        raise
+                    logging.warning(
+                        "llama.cpp completion disconnected before output; retrying in %.2fs (%d/%d)",
+                        delay,
+                        attempt + 1,
+                        len(SAFE_RETRY_DELAYS_SECONDS),
+                    )
+                    time.sleep(delay)
+
+        return stream_with_retry()
 
     def close(self):
         self.provider.close()

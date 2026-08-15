@@ -109,6 +109,8 @@ def main(
     annotation_instruction: str,
     thought_process_instruction: str,
     response_instruction: str,
+    markers: dict[str, str] | None = None,
+    thought_process_output_prefix: str | None = None,
     chat_id: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
@@ -258,6 +260,8 @@ def main(
             annotation_instruction=annotation_instruction,
             thought_process_instruction=thought_process_instruction,
             response_instruction=response_instruction,
+            markers=markers,
+            thought_process_output_prefix=thought_process_output_prefix,
         )
 
     finally:
@@ -299,6 +303,12 @@ if __name__ == "__main__":
     response_instruction = config.get("RESPONSE_INSTRUCTION")
     if not response_instruction:
         raise RuntimeError("RESPONSE_INSTRUCTION is missing from config.json")
+    markers = config.get("MARKERS")
+    if not isinstance(markers, dict):
+        raise RuntimeError("MARKERS is missing from config.json")
+    thought_process_output_prefix = config.get("THOUGHT_PROCESS_OUTPUT_PREFIX")
+    if thought_process_output_prefix is not None and not isinstance(thought_process_output_prefix, str):
+        raise RuntimeError("THOUGHT_PROCESS_OUTPUT_PREFIX must be a string or null")
     # ---------------------------------------------------------
     # CLI
     # ---------------------------------------------------------
@@ -346,4 +356,6 @@ if __name__ == "__main__":
         annotation_instruction=annotation_instruction,
         thought_process_instruction=thought_process_instruction,
         response_instruction=response_instruction,
+        markers=markers,
+        thought_process_output_prefix=thought_process_output_prefix,
     )

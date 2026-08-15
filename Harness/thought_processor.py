@@ -9,16 +9,16 @@ from typing import Any, TypedDict
 from LLManager import LLManager
 from storage import ChatStorage, utc_now
 
+from .markers import resolve_markers
 from .state import Annotation
 from .structured_output import (
     JSONFieldStreamDecoder,
+    PrefixStripper,
     single_string_schema,
     structured_output_instruction,
 )
 
 
-ANNOTATIONS_MARKER = "\n\n[Accumulated annotations]\n"
-THOUGHT_PROCESS_MARKER = "\n\n[Complete thought process]\n"
 THOUGHT_PROCESS_SCHEMA = single_string_schema("thought_process")
 
 
@@ -41,6 +41,8 @@ class ThoughtProcessor:
         instruction: str,
         n_predict: int = 256,
         temperature: float = 0.4,
+        markers: dict[str, str] | None = None,
+        output_prefix: str | None = None,
     ):
         if not instruction:
             raise ValueError("thought-process instruction cannot be empty")
@@ -53,10 +55,13 @@ class ThoughtProcessor:
         self.instruction = instruction
         self.n_predict = n_predict
         self.temperature = temperature
+        self.markers = resolve_markers(markers)
+        self.output_prefix = output_prefix
 
     def generate(
         self,
         *,
+        message: str,
         annotations: list[Annotation],
         system_prompt: str | None,
         conversation_history: str | None,
@@ -68,21 +73,24 @@ class ThoughtProcessor:
             f"Chunk {annotation['chunk_index']}: {annotation['text']}"
             for annotation in annotations
         )
-        prompt_parts = []
+        prompt_parts: list[str] = []
         if system_prompt:
             prompt_parts.append(system_prompt.rstrip())
         if conversation_history:
             prompt_parts.append(conversation_history)
-        # The thought-process instruction must be the final prompt prefix.
-        # If it precedes the annotations, the model treats it as another item
-        # to analyse rather than as the cue to begin its own continuation.
         prompt_parts.extend([
-            f"{ANNOTATIONS_MARKER}{annotation_text}",
-            THOUGHT_PROCESS_MARKER,
+            f"{self.markers['user_message']}{message}",
+            f"{self.markers['accumulated_annotations']}{annotation_text}",
+            self.markers["thought_process"],
             self.instruction,
+            (
+                "The thought_process string must begin exactly with: "
+                f"{json.dumps(self.output_prefix)}. Continue the reasoning immediately after it."
+                if self.output_prefix else ""
+            ),
             structured_output_instruction("thought_process"),
         ])
-        prompt = "\n\n".join(prompt_parts)
+        prompt = "\n\n".join(part for part in prompt_parts if part)
         prompt_tokens = self.llm.tokenize(
             prompt,
             model=self.model,
@@ -110,6 +118,7 @@ class ThoughtProcessor:
         events: list[dict[str, Any]] = []
         raw_content_parts: list[str] = []
         decoder = JSONFieldStreamDecoder("thought_process")
+        prefix_stripper = PrefixStripper(self.output_prefix)
         token_ids: list[int] = []
         if on_event is not None:
             on_event({"type": "thought_process_start"})
@@ -123,13 +132,14 @@ class ThoughtProcessor:
                 return_progress=True,
                 temperature=self.temperature,
                 json_schema=THOUGHT_PROCESS_SCHEMA,
+                retry_before_first_token=True,
             ):
                 events.append(event)
                 content = event.get("content", "")
                 tokens = event.get("tokens", [])
                 if isinstance(content, str) and content:
                     raw_content_parts.append(content)
-                    decoded_content = decoder.feed(content)
+                    decoded_content = prefix_stripper.feed(decoder.feed(content))
                     if decoded_content and on_event is not None:
                         on_event({"type": "thought_process_delta", "content": decoded_content})
                 if isinstance(tokens, list):
@@ -144,14 +154,19 @@ class ThoughtProcessor:
         raw_content = "".join(raw_content_parts)
         response = {**(events[-1] if events else {}), "content": raw_content, "tokens": token_ids}
         try:
-            text = decoder.result()
+            generated_text = decoder.result()
         except ValueError as exc:
             self._trace(
                 run_id, turn_id, request, response, started_at, started_clock,
                 "error", {"type": type(exc).__name__, "message": str(exc)},
             )
             raise RuntimeError(str(exc)) from exc
-        response["decoded_thought_process"] = text
+        text = prefix_stripper.strip(generated_text)
+        response["decoded_thought_process"] = generated_text
+        response["stripped_thought_process"] = text
+        response["output_prefix_matched"] = (
+            not self.output_prefix or generated_text.startswith(self.output_prefix)
+        )
         if not text or not token_ids:
             error = {
                 "type": "InvalidCompletionResponse",
@@ -181,6 +196,8 @@ class ThoughtProcessor:
                 "generated_token_ids": response.get("tokens", []) if response else [],
                 "generated_content": response.get("content") if response else "",
                 "decoded_thought_process": response.get("decoded_thought_process") if response else None,
+                "stripped_thought_process": response.get("stripped_thought_process") if response else None,
+                "output_prefix_matched": response.get("output_prefix_matched") if response else None,
                 "tokens_cached": timings.get("cache_n") if isinstance(timings, dict) else None,
                 "tokens_evaluated": timings.get("prompt_n") if isinstance(timings, dict) else None,
                 "slot_id": response.get("id_slot") if response else None,

@@ -8,6 +8,7 @@ from typing import Any, TypedDict
 
 from LLManager import LLManager
 from storage import ChatStorage, utc_now
+from .markers import resolve_markers
 from .structured_output import (
     JSONFieldStreamDecoder,
     single_string_schema,
@@ -29,7 +30,8 @@ class Responder:
 
     def __init__(self, *, llm: LLManager, store: ChatStorage, model: str,
                  user_id: str, chat_id: str, instruction: str,
-                 n_predict: int = 512, temperature: float = 0.4):
+                 n_predict: int = 512, temperature: float = 0.4,
+                 markers: dict[str, str] | None = None):
         self.llm = llm
         self.store = store
         self.model = model
@@ -38,6 +40,7 @@ class Responder:
         self.instruction = instruction
         self.n_predict = n_predict
         self.temperature = temperature
+        self.markers = resolve_markers(markers)
 
     def generate(self, *, message: str, thought_process: str,
                  system_prompt: str | None, conversation_history: str | None,
@@ -48,10 +51,16 @@ class Responder:
         if conversation_history:
             user_parts.append(conversation_history)
         user_parts.extend([
-            f"The user's newest message is:\n{message}",
-            f"Use this internal reasoning to inform your answer; do not repeat it:\n{thought_process}",
+            f"{self.markers['user_message']}{message}",
+            (
+                "Use this internal reasoning to inform your answer; do not "
+                f"repeat it:\n{self.markers['thought_process']}{thought_process}"
+            ),
             self.instruction,
-            structured_output_instruction("response"),
+            (
+                'Return exactly one JSON object with one key, "response". '
+                "Its string value must contain only the reply to the user."
+            ),
         ])
         messages = []
         if system_prompt:
@@ -96,6 +105,7 @@ class Responder:
                 return_progress=True,
                 stop=[GEMMA_END_OF_TURN],
                 json_schema=RESPONSE_SCHEMA,
+                retry_before_first_token=True,
             ):
                 events.append(event)
                 content = event.get("content", "")

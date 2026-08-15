@@ -123,6 +123,7 @@ def build_graph(
 
     def generate_thought_process(state: HarnessState) -> dict:
         result = thought_processor.generate(
+            message=state["message"],
             annotations=state["annotations"],
             system_prompt=state.get("system_prompt"),
             conversation_history=state.get("conversation_history"),

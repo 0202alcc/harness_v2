@@ -18,6 +18,7 @@ from .state import HarnessState
 from .thought_processor import ThoughtProcessor
 from .responder import Responder
 from .history import format_conversation_history
+from .markers import resolve_markers
 
 
 class Harness:
@@ -36,6 +37,8 @@ class Harness:
         annotation_instruction: str,
         thought_process_instruction: str,
         response_instruction: str,
+        markers: dict[str, str] | None = None,
+        thought_process_output_prefix: str | None = None,
     ):
         self.llm = llm
         self.store = store
@@ -43,6 +46,7 @@ class Harness:
         self.model = model
         self.user_id = user_id
         self.chat_id = chat_id
+        self.markers = resolve_markers(markers)
 
         # -----------------------------------------------------
         # Pipeline components
@@ -61,8 +65,9 @@ class Harness:
             user_id=self.user_id,
             chat_id=self.chat_id,
             instruction=annotation_instruction,
-            n_predict=48,
+            n_predict=96,
             temperature=0.4,
+            markers=self.markers,
         )
         self.thought_processor = ThoughtProcessor(
             llm=self.llm,
@@ -71,11 +76,14 @@ class Harness:
             user_id=self.user_id,
             chat_id=self.chat_id,
             instruction=thought_process_instruction,
+            markers=self.markers,
+            output_prefix=thought_process_output_prefix,
         )
         self.responder = Responder(
             llm=self.llm, store=self.store, model=self.model,
             user_id=self.user_id, chat_id=self.chat_id,
             instruction=response_instruction,
+            markers=self.markers,
         )
 
         # -----------------------------------------------------

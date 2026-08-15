@@ -12,6 +12,7 @@ from LLManager import LLManager, ProviderError
 from storage import ChatStorage, utc_now
 
 from .chunker import Chunk
+from .markers import resolve_markers
 from .state import Annotation
 from .structured_output import (
     JSONFieldStreamDecoder,
@@ -29,8 +30,6 @@ from .structured_output import (
 # + SOURCE_MARKER + C1 + ANNOTATION_MARKER + A1
 # + ...
 #
-SOURCE_MARKER = "\n\n[Source chunk]\n"
-ANNOTATION_MARKER = "\n\n[Annotation]\n"
 ANNOTATION_SCHEMA = single_string_schema("annotation")
 
 # There are three initial attempts: the original request plus these retries.
@@ -70,6 +69,7 @@ class Annotator:
         instruction: str,
         n_predict: int = 64,
         temperature: float = 0.4,
+        markers: dict[str, str] | None = None,
     ):
         if not instruction:
             raise ValueError(
@@ -82,6 +82,7 @@ class Annotator:
         self.user_id = user_id
         self.chat_id = chat_id
         self.instruction = instruction
+        self.markers = resolve_markers(markers)
 
         self.n_predict = n_predict
         self.temperature = temperature
@@ -89,14 +90,14 @@ class Annotator:
         # These are static, so tokenize them once rather than
         # making another /tokenize request for every chunk.
         self._source_marker_tokens = self.llm.tokenize(
-            SOURCE_MARKER,
+            self.markers["source_chunk"],
             model=self.model,
             add_special=False,
             parse_special=False,
         )
 
         self._annotation_marker_tokens = self.llm.tokenize(
-            ANNOTATION_MARKER,
+            self.markers["annotation"],
             model=self.model,
             add_special=False,
             parse_special=False,
@@ -388,12 +389,21 @@ class Annotator:
             "token_ids": annotation_tokens,
         }
 
+        # JSON is only the transport format. Re-encode the decoded text so
+        # future chunks accumulate compact marker text, not JSON syntax.
+        compact_annotation_tokens = self.llm.tokenize(
+            annotation_text,
+            model=self.model,
+            add_special=False,
+            parse_special=False,
+        )
+
         return {
             "annotation": annotation,
 
             "thinking_token_ids": (
                 prompt_tokens
-                + annotation_tokens
+                + compact_annotation_tokens
             ),
         }
 

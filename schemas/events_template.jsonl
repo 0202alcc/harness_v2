@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+
+  "event_id": "{{event_id}}",
+  "event_number": "{{event_number}}",
+  "event_type": "{{event_type}}",
+
+  "timestamp": "{{timestamp}}",
+
+  "user_id": "{{user_id}}",
+  "chat_id": "{{chat_id}}",
+  "branch_id": "{{branch_id}}",
+  "turn_id": "{{turn_id_or_null}}",
+
+  "state_version_before": "{{state_version_before}}",
+  "state_version_after": "{{state_version_after}}",
+
+  "changes": []
+}

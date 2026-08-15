@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local LLM Interface</title>
+</head>
+<body>
+
+    <h2>LLM Chat</h2>
+    <pre id="chat-data">{{ chat_metadata }}</pre>
+    <div class="messages">
+        {% for msg in chat_data.messages %}
+            <div class="message {{ msg.role }}">
+                <div class="message-meta">
+                    <strong>{{ msg.role | capitalize }}</strong>
+                    <small>#{{ msg.sequence_number }}</small>
+                </div>
+
+                <div class="message-content">
+                    {{ msg.content }}
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+
+    <form id="chat-form" action="/send" method="post">
+        <div class="form-group">
+            <label for="system_prompt">System Prompt (optional):</label>
+            <input type="text" id="system_prompt" name="system_prompt" value="{{ chat_data.system_prompt or '' }}" placeholder="Uses the existing prompt when left blank">
+            <label>
+                <input type="checkbox" name="disable_system_prompt">
+                Disable system prompt for this conversation
+            </label>
+        </div>
+
+        <div class="form-group">
+            <label for="message">Message:</label>
+            <input type="text" id="message" name="message" value="{{ message if message else '' }}" required>
+        </div>
+
+        <button type="submit">Send</button>
+    </form>
+
+    <div id="result" class="result" hidden></div>
+
+    <script>
+        const form = document.getElementById("chat-form");
+        const result = document.getElementById("result");
+        const messages = document.querySelector(".messages");
+        let activeUserMessage = null;
+        let activeThoughtContent = null;
+        let activeResponseContent = null;
+
+        function scrollToBottom(behavior = "smooth") {
+            window.scrollTo({
+                top: document.documentElement.scrollHeight,
+                behavior,
+            });
+        }
+
+        window.addEventListener("load", () => scrollToBottom("auto"));
+
+        function createUserMessage() {
+            const message = document.createElement("div");
+            message.className = "message user";
+            const meta = document.createElement("div");
+            meta.className = "message-meta";
+            meta.textContent = "User";
+            const body = document.createElement("div");
+            body.className = "message-content";
+            message.append(meta, body);
+            messages.append(message);
+            return body;
+        }
+
+        function appendChunkAndAnnotation(eventData) {
+            if (!activeUserMessage) activeUserMessage = createUserMessage();
+
+            const chunk = document.createElement("span");
+            chunk.className = "source-chunk";
+            chunk.textContent = eventData.chunk_text;
+            activeUserMessage.append(chunk);
+
+            const quote = document.createElement("blockquote");
+            quote.id = `annotation-${eventData.chunk_index}`;
+            const label = document.createElement("strong");
+            label.textContent = `Annotation ${eventData.chunk_index + 1}`;
+            const content = document.createElement("pre");
+            quote.append(label, content);
+            activeUserMessage.append(quote);
+        }
+
+        function startThoughtProcess() {
+            if (!activeUserMessage) activeUserMessage = createUserMessage();
+            const details = document.createElement("details");
+            details.open = true;
+            const summary = document.createElement("summary");
+            summary.textContent = "Complete thought process";
+            const content = document.createElement("pre");
+            details.append(summary, content);
+            activeUserMessage.append(details);
+            activeThoughtContent = content;
+        }
+
+        function appendThoughtProcess(text) {
+            if (!activeThoughtContent) startThoughtProcess();
+            activeThoughtContent.textContent += text;
+        }
+
+        function startAssistantResponse() {
+            const message = document.createElement("div");
+            message.className = "message assistant";
+            const meta = document.createElement("div");
+            meta.className = "message-meta";
+            meta.textContent = "Assistant";
+            const body = document.createElement("div");
+            body.className = "message-content";
+            message.append(meta, body);
+            messages.append(message);
+            activeResponseContent = body;
+        }
+
+        function appendAssistantResponse(text) {
+            if (!activeResponseContent) startAssistantResponse();
+            activeResponseContent.textContent += text;
+        }
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            activeUserMessage = null;
+            activeThoughtContent = null;
+            activeResponseContent = null;
+            result.hidden = true;
+            const button = form.querySelector("button");
+            button.disabled = true;
+            const formData = new FormData(form);
+            form.elements.message.value = "";
+
+            try {
+                const response = await fetch("/send", {
+                    method: "POST",
+                    body: formData,
+                });
+                if (!response.ok || !response.body) throw new Error("Could not start annotation stream.");
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const messages = buffer.split("\n\n");
+                    buffer = messages.pop();
+                    for (const message of messages) {
+                        if (!message.startsWith("data: ")) continue;
+                        const eventData = JSON.parse(message.slice(6));
+                        if (eventData.type === "annotation_start") {
+                            appendChunkAndAnnotation(eventData);
+                        } else if (eventData.type === "annotation_delta") {
+                            const annotation = document.querySelector(`#annotation-${eventData.chunk_index} pre`);
+                            if (annotation) annotation.textContent += eventData.content;
+                        } else if (eventData.type === "thought_process_start") {
+                            startThoughtProcess();
+                        } else if (eventData.type === "thought_process_delta") {
+                            appendThoughtProcess(eventData.content);
+                        } else if (eventData.type === "thought_process_complete") {
+                            if (!activeThoughtContent) appendThoughtProcess(eventData.text);
+                        } else if (eventData.type === "response_start") {
+                            startAssistantResponse();
+                        } else if (eventData.type === "response_delta") {
+                            appendAssistantResponse(eventData.content);
+                        } else if (eventData.type === "response_complete") {
+                            if (!activeResponseContent) appendAssistantResponse(eventData.text);
+                            scrollToBottom();
+                        } else if (eventData.type === "error") {
+                            throw new Error(eventData.message);
+                        } else if (eventData.type === "complete") {
+                            const data = eventData.result;
+                            result.textContent = `Message split into ${data.chunk_count} chunk(s), ${data.total_tokens} tokens. Generated ${data.annotation_count} annotation(s).`;
+                            result.hidden = false;
+                        }
+                    }
+                }
+            } catch (error) {
+                result.textContent = error.message;
+                result.hidden = false;
+            } finally {
+                button.disabled = false;
+            }
+        });
+    </script>
+
+</body>
+</html>

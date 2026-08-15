@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+
+  "io_id": "{{uuid}}",
+  "io_number": "{{monotonic_io_number}}",
+
+  "user_id": "{{user_id}}",
+  "chat_id": "{{chat_id}}",
+  "branch_id": "{{branch_id}}",
+  "turn_id": "{{turn_id}}",
+
+  "run_id": "{{pipeline_run_id}}",
+  "node": "{{langgraph_node_name}}",
+
+  "chunk_index": "{{chunk_index_or_null}}",
+
+  "provider": "llama.cpp",
+  "model": "{{model}}",
+
+  "operation": "{{operation}}",
+  "endpoint": "{{endpoint}}",
+
+  "started_at": "{{timestamp}}",
+  "finished_at": "{{timestamp}}",
+  "duration_ms": "{{duration_ms}}",
+
+  "request": {
+    "stream": true,
+    "prompt_token_count": "{{integer}}",
+    "prompt_token_sha256": "{{sha256}}",
+    "n_predict": "{{integer}}",
+    "cache_prompt": true,
+    "return_tokens": true,
+    "return_progress": true,
+    "temperature": "{{number}}",
+    "stop": [],
+    "attempt": {
+      "kind": "initial|initial_retry|continuation",
+      "initial_retry_index": "{{integer}}",
+      "continuation_retry_index": "{{integer}}"
+    }
+  },
+
+  "response": {
+    "stream_event_count": "{{integer}}",
+    "generated_token_count": "{{integer}}",
+    "generated_token_ids": [],
+    "generated_content": "{{string}}",
+    "tokens_cached": "{{integer_or_null}}",
+    "tokens_evaluated": "{{integer_or_null}}",
+    "llama_tokens_cached": "{{integer_or_null}}",
+    "llama_tokens_evaluated": "{{integer_or_null}}",
+    "prompt_progress": {},
+    "slot_id": "{{integer_or_null}}",
+    "timings": {},
+    "stop_type": "{{string_or_null}}",
+    "truncated": "{{boolean_or_null}}",
+    "final_event": {}
+  },
+
+  "status": "success",
+  "error": null
+}

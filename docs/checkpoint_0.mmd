@@ -1,0 +1,52 @@
+flowchart TD
+    Browser["HTML chat page"]
+    Server["FastAPI send endpoint<br/>SSE stream"]
+    Store["Chat storage<br/>state, events, llama traces"]
+    Llama["llama.cpp server<br/>Gemma 4"]
+
+    Browser -->|"submit user message"| Server
+    Server -->|"persist user turn"| Store
+    Server -->|"run Harness"| Harness
+
+    subgraph Harness["Harness LangGraph pipeline"]
+        Chunker["1. Token chunker"]
+        Init["2. Initialize annotation context<br/>system prompt, history, instruction"]
+        Annotate["3. Annotation loop<br/>one source chunk at a time"]
+        Thought["4. Thought-process pass"]
+        Respond["5. Final-response pass"]
+
+        Chunker --> Init --> Annotate
+        Annotate -->|"more chunks"| Annotate
+        Annotate -->|"all chunks complete"| Thought --> Respond
+    end
+
+    Store -->|"prior messages and optional system prompt"| Init
+    Store -->|"conversation history"| Thought
+    Store -->|"conversation history"| Respond
+
+    subgraph Structured["Shared constrained-output layer"]
+        AnnotationJSON["Annotation output<br/>annotation string field"]
+        ThoughtJSON["Thought output<br/>thought process string field"]
+        ResponseJSON["Response output<br/>response string field"]
+        Decoder["Reusable incremental JSON-field decoder"]
+    end
+
+    Annotate -->|"raw token prompt and JSON schema"| Llama
+    Llama --> AnnotationJSON --> Decoder
+    Decoder -->|"annotation delta"| Server
+
+    Thought -->|"prompt and JSON schema"| Llama
+    Llama --> ThoughtJSON --> Decoder
+    Decoder -->|"thought-process delta"| Server
+
+    Respond -->|"native Gemma chat template and JSON schema"| Llama
+    Llama --> ResponseJSON --> Decoder
+    Decoder -->|"response delta"| Server
+
+    Server -->|"live SSE events"| Browser
+    Browser -->|"source chunks, annotation blockquotes,<br/>thought details, assistant reply"| Browser
+
+    Annotate -->|"tokens, cache, retries, timings"| Store
+    Thought -->|"request and response trace"| Store
+    Respond -->|"raw structured output and decoded reply"| Store
+    Respond -->|"persist final assistant message"| Store

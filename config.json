@@ -1,0 +1,22 @@
+{
+    "STATE": {
+        "chat_id": null,
+        "user_id": null},
+    "PATH": {
+        "logs": "./.logs/",
+        "templates": "./app/templates/",
+        "json_template": "./app/templates/chat_json_template.json"
+    },
+    "MARKERS": {
+        "source_chunk": "\n\n[msg chunk]\n",
+        "annotation": "\n\n[annotation]\n",
+        "accumulated_annotations": "\n\n[full annotations]\n",
+        "thought_process": "\n\n[my reasoning]\n",
+        "user_message": "\n\n[friend msg]\n",
+        "assistant_response": "\n\n[my msg]\n"
+    },
+    "ANNOTATION_INSTRUCTION": "I just received a message... here's my real-time thought process:",
+    "THOUGHT_PROCESS_INSTRUCTION": "Now that I've digested the message, let me think before I reply:",
+    "THOUGHT_PROCESS_OUTPUT_PREFIX": "Now that I've digested the message, let me think before I reply:",
+    "RESPONSE_INSTRUCTION": "Here's my reply:"
+}

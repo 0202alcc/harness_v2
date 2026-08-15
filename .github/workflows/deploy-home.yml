@@ -1,0 +1,26 @@
+name: Deploy home server
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: harness-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64]
+    permissions: {}
+
+    steps:
+      - name: Update Harness and restart it
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd /srv/harness_v2
+          git fetch --prune origin main
+          git checkout --detach origin/main
+          /home/harness/.local/bin/uv sync --frozen
+          sudo /usr/bin/systemctl restart harness-v2.service

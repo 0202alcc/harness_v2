@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+import uuid
 from typing import Any
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from Harness import Harness
@@ -91,6 +92,29 @@ def create_app(
     app.state.store = store
     app.state.harness = harness
 
+    def get_harness(selected_chat_id: str) -> Harness:
+        """Reuse the startup Harness for its chat; build one for another chat."""
+        if selected_chat_id == app.state.chat_id:
+            return app.state.harness
+
+        selected_chat = store.get_chat(
+            chat_id=selected_chat_id,
+            user_id=user_id,
+        )
+        selected_model = selected_chat.get("current_model", {}).get("model") or model
+        return Harness(
+            llm=llm,
+            store=store,
+            model=selected_model,
+            user_id=user_id,
+            chat_id=selected_chat_id,
+            annotation_instruction=annotation_instruction,
+            thought_process_instruction=thought_process_instruction,
+            response_instruction=response_instruction,
+            markers=markers,
+            thought_process_output_prefix=thought_process_output_prefix,
+        )
+
     # ---------------------------------------------------------
     # Routes
     # ---------------------------------------------------------
@@ -101,11 +125,16 @@ def create_app(
     )
     async def read_form(
         request: Request,
+        chat_id: str | None = None,
     ):
-        chat_data = store.get_chat(
-            chat_id=chat_id,
-            user_id=user_id,
-        )
+        selected_chat_id = chat_id or app.state.chat_id
+        try:
+            chat_data = store.get_chat(
+                chat_id=selected_chat_id,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Chat not found") from exc
 
         return templates.TemplateResponse(
             request=request,
@@ -114,8 +143,22 @@ def create_app(
                 "request": request,
                 "chat_data": chat_data,
                 "chat_metadata": chat_metadata(chat_data),
+                "chat_list": store.list_chats(user_id),
+                "selected_chat_id": selected_chat_id,
             },
         )
+
+    @app.post("/chats")
+    async def create_chat() -> RedirectResponse:
+        new_chat_id = str(uuid.uuid4())
+        store.create_chat(
+            chat_id=new_chat_id,
+            user_id=user_id,
+            provider="llama.cpp",
+            model=model,
+            system_prompt=None,
+        )
+        return RedirectResponse(url=f"/?chat_id={new_chat_id}", status_code=303)
 
     @app.post(
         "/send",
@@ -126,11 +169,13 @@ def create_app(
         system_prompt: str | None = Form(None),
         disable_system_prompt: bool = Form(False),
         message: str = Form(...),
+        chat_id: str = Form(...),
     ):
-        chat_data = store.get_chat(
-            chat_id=chat_id,
-            user_id=user_id,
-        )
+        try:
+            chat_data = store.get_chat(chat_id=chat_id, user_id=user_id)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Chat not found") from exc
+        selected_harness = get_harness(chat_id)
 
         # A blank submission means "keep the already selected prompt".
         # New chats therefore use no system prompt unless the user enters one.
@@ -169,7 +214,7 @@ def create_app(
         async def run_harness() -> dict[str, Any]:
             try:
                 result = await run_in_threadpool(
-                    harness.handle_message,
+                    selected_harness.handle_message,
                     message=message,
                     turn_id=turn_id,
                     on_annotation_event=send_event,

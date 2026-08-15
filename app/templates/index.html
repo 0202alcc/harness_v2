@@ -8,6 +8,20 @@
 <body>
 
     <h2>LLM Chat</h2>
+    <form action="/" method="get">
+        <label for="chat_id">Chat:</label>
+        <select id="chat_id" name="chat_id" onchange="this.form.submit()">
+            {% for chat in chat_list %}
+                <option value="{{ chat.chat_id }}" {% if chat.chat_id == selected_chat_id %}selected{% endif %}>
+                    {{ chat.chat_id[:8] }} ({{ chat.message_count }} messages)
+                </option>
+            {% endfor %}
+        </select>
+        <noscript><button type="submit">Open</button></noscript>
+    </form>
+    <form action="/chats" method="post">
+        <button type="submit">New chat</button>
+    </form>
     <pre id="chat-data">{{ chat_metadata }}</pre>
     <div class="messages">
         {% for msg in chat_data.messages %}
@@ -25,6 +39,7 @@
     </div>
 
     <form id="chat-form" action="/send" method="post">
+        <input type="hidden" name="chat_id" value="{{ selected_chat_id }}">
         <div class="form-group">
             <label for="system_prompt">System Prompt (optional):</label>
             <input type="text" id="system_prompt" name="system_prompt" value="{{ chat_data.system_prompt or '' }}" placeholder="Uses the existing prompt when left blank">

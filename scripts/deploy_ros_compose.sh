@@ -23,6 +23,9 @@ base_compose="compose.ros.yaml"
 }
 
 compose=(docker compose --project-name harness-v2 -f "$base_compose")
+release_version="$(tr -d '[:space:]' < VERSION)"
+release_revision="$(git rev-parse --short HEAD)"
+export HARNESS_VERSION="${release_version}+${release_revision}"
 "${compose[@]}" config --quiet
 had_existing=false
 [[ -n "$("${compose[@]}" ps --quiet 2>/dev/null)" ]] && had_existing=true

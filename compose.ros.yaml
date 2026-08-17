@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ros
+      args:
+        HARNESS_VERSION: ${HARNESS_VERSION:-0.1.0+local}
     ports:
       - "8000:8000"
     environment:
@@ -12,6 +14,7 @@ services:
       HARNESS_USER_ID: ${HARNESS_USER_ID:-}
       HARNESS_CHAT_ID: ${HARNESS_CHAT_ID:-}
       HARNESS_MODEL: ${CHOSEN_MODEL:-}
+      HARNESS_VERSION: ${HARNESS_VERSION:-0.1.0+local}
       HARNESS_LOG_ROOT: /workspace/.logs
       HARNESS_CONFIG_PATH: /workspace/config.json
     volumes:

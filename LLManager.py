@@ -43,6 +43,11 @@ class Provider:
     def close(self) -> None:
         pass
 
+    def supports_full_bandwidth(self, model: str) -> bool:
+        """Whether ``model`` has a trained full-bandwidth feedback path."""
+
+        return False
+
 
 class LlamaCppProvider(Provider):
     """
@@ -521,6 +526,20 @@ class LlamaCppProvider(Provider):
                 retryable=True,
             ) from exc
 
+    def supports_full_bandwidth(self, model: str) -> bool:
+        """Read the explicit capability exposed by a modified model server.
+
+        Upstream llama.cpp and standard GGUF models do not expose this flag,
+        so they remain safely disabled.
+        """
+
+        properties = self.model_props(model)
+        capabilities = properties.get("capabilities", {})
+        return bool(
+            isinstance(capabilities, dict)
+            and capabilities.get("full_bandwidth_feedback")
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -580,6 +599,9 @@ class LLManager:
 
     def model_props(self, model: str, **kwargs):
         return self.provider.model_props(model, **kwargs)
+
+    def supports_full_bandwidth(self, model: str) -> bool:
+        return self.provider.supports_full_bandwidth(model)
 
     def tokenize(self, text: str, model: str, **kwargs):
         return self._retry_safe_setup(

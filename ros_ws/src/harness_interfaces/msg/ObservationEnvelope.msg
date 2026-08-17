@@ -1,0 +1,16 @@
+std_msgs/Header header
+string observation_id
+string session_id
+string source_id
+uint64 sequence
+string modality
+string correlation_id
+string causation_id
+string trace_id
+string payload_uri
+string payload_text
+string content_hash
+builtin_interfaces/Time captured_at
+builtin_interfaces/Time received_at
+builtin_interfaces/Time expires_at
+uint16 schema_version

@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [dev, staging, main]
   push:
-    branches: [staging, main]
+    branches: [dev, staging, main]
 
 permissions:
   contents: read
@@ -32,3 +32,6 @@ jobs:
 
       - name: Compile Python sources
         run: uv run python -m compileall -q Harness app main.py storage.py LLManager.py
+
+      - name: Build ROS runtime image
+        run: docker build --tag harness-ros:ci --file Dockerfile.ros .

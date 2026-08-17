@@ -19,6 +19,7 @@ from .thought_processor import ThoughtProcessor
 from .responder import Responder
 from .history import format_conversation_history
 from .markers import resolve_markers
+from .full_bandwidth import FullBandwidthFeedback
 
 
 class Harness:
@@ -39,6 +40,7 @@ class Harness:
         response_instruction: str,
         markers: dict[str, str] | None = None,
         thought_process_output_prefix: str | None = None,
+        full_bandwidth_feedback: bool = False,
     ):
         self.llm = llm
         self.store = store
@@ -47,6 +49,13 @@ class Harness:
         self.user_id = user_id
         self.chat_id = chat_id
         self.markers = resolve_markers(markers)
+        self.full_bandwidth = FullBandwidthFeedback(
+            enabled=full_bandwidth_feedback,
+        )
+        self.completion_options = self.full_bandwidth.completion_options(
+            self.llm,
+            self.model,
+        )
 
         # -----------------------------------------------------
         # Pipeline components
@@ -68,6 +77,7 @@ class Harness:
             n_predict=96,
             temperature=0.4,
             markers=self.markers,
+            completion_options=self.completion_options,
         )
         self.thought_processor = ThoughtProcessor(
             llm=self.llm,
@@ -78,12 +88,14 @@ class Harness:
             instruction=thought_process_instruction,
             markers=self.markers,
             output_prefix=thought_process_output_prefix,
+            completion_options=self.completion_options,
         )
         self.responder = Responder(
             llm=self.llm, store=self.store, model=self.model,
             user_id=self.user_id, chat_id=self.chat_id,
             instruction=response_instruction,
             markers=self.markers,
+            completion_options=self.completion_options,
         )
 
         # -----------------------------------------------------
@@ -110,6 +122,7 @@ class Harness:
         turn_id: str,
         run_id: str | None = None,
         on_annotation_event: Callable[[dict[str, Any]], None] | None = None,
+        persist_response: bool = True,
     ) -> HarnessState:
         """
         Run one incoming user message through the Harness graph.
@@ -158,11 +171,12 @@ class Harness:
         print(result["thought_process"])
         print("\n--- Response ---")
         print(result["response"])
-        self.store.append_message(
-            chat_id=self.chat_id,
-            user_id=self.user_id,
-            role="assistant",
-            content=result["response"],
-            turn_id=turn_id,
-        )
+        if persist_response:
+            self.store.append_message(
+                chat_id=self.chat_id,
+                user_id=self.user_id,
+                role="assistant",
+                content=result["response"],
+                turn_id=turn_id,
+            )
         return result

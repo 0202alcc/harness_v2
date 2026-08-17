@@ -122,6 +122,27 @@ def test_next_chunk_uses_compact_marker_text_not_generated_json_tokens(tmp_path)
     assert 10 not in llm.prompts[1]
 
 
+def test_annotation_forwards_full_bandwidth_protocol_to_the_backend(tmp_path):
+    annotator, llm, _store = make_annotator(
+        tmp_path,
+        [[stream_event('{"chunk":"Hello","done":true}', 10)]],
+    )
+    annotator.completion_options = {
+        "full_bandwidth_feedback": {
+            "enabled": True,
+            "protocol_version": 1,
+        }
+    }
+
+    run_annotation(annotator)
+
+    # A production backend receives this opaque flag and owns the hidden state.
+    assert llm.completion_kwargs[0]["full_bandwidth_feedback"] == {
+        "enabled": True,
+        "protocol_version": 1,
+    }
+
+
 def test_connection_drop_before_tokens_retries_original_prompt(tmp_path):
     annotator, llm, store = make_annotator(
         tmp_path,

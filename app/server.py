@@ -9,15 +9,16 @@ import uuid
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from Harness import Harness
 from LLManager import LLManager
-from storage import ChatStorage
+from storage import ChatNotFoundError, ChatStorage
 from app.github_issues import format_issue_body
+from app.always_on import AlwaysOnOrchestrator
 
 
 templates = Jinja2Templates(
@@ -42,6 +43,11 @@ def chat_metadata(chat_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def latest_event_number(store: ChatStorage, *, chat_id: str, user_id: str) -> int:
+    events = store.get_events(chat_id=chat_id, user_id=user_id)
+    return events[-1]["event_number"] if events else -1
+
+
 def create_app(
     *,
     chat_id: str,
@@ -54,6 +60,7 @@ def create_app(
     response_instruction: str,
     markers: dict[str, str] | None = None,
     thought_process_output_prefix: str | None = None,
+    full_bandwidth_feedback: bool = False,
     github_repository: str | None = None,
     github_token: str | None = None,
 ) -> FastAPI:
@@ -82,6 +89,7 @@ def create_app(
         response_instruction=response_instruction,
         markers=markers,
         thought_process_output_prefix=thought_process_output_prefix,
+        full_bandwidth_feedback=full_bandwidth_feedback,
     )
 
     # ---------------------------------------------------------
@@ -119,11 +127,23 @@ def create_app(
             response_instruction=response_instruction,
             markers=markers,
             thought_process_output_prefix=thought_process_output_prefix,
+            full_bandwidth_feedback=full_bandwidth_feedback,
         )
+
+    app.state.orchestrator = AlwaysOnOrchestrator(
+        store=store,
+        get_harness=get_harness,
+        user_id=user_id,
+    )
 
     # ---------------------------------------------------------
     # Routes
     # ---------------------------------------------------------
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, bool]:
+        """Container readiness probe; inference-provider health is separate."""
+        return {"ok": True}
 
     @app.get(
         "/",
@@ -151,6 +171,9 @@ def create_app(
                 "chat_metadata": chat_metadata(chat_data),
                 "chat_list": store.list_chats(user_id),
                 "selected_chat_id": selected_chat_id,
+                "event_cursor": latest_event_number(
+                    store, chat_id=selected_chat_id, user_id=user_id
+                ),
             },
         )
 
@@ -165,6 +188,83 @@ def create_app(
             system_prompt=None,
         )
         return RedirectResponse(url=f"/?chat_id={new_chat_id}", status_code=303)
+
+    @app.post("/sessions/{session_id}/observations/text", status_code=202)
+    async def submit_text_observation(
+        session_id: str,
+        payload: dict[str, Any],
+    ) -> JSONResponse:
+        """Accept an observation without holding the HTTP request for the LLM."""
+        try:
+            accepted = await app.state.orchestrator.submit_text(
+                session_id=session_id,
+                content=str(payload.get("content", "")),
+                source_id=str(payload.get("source_id", "web")),
+                sequence=int(payload.get("sequence", 0)),
+                observation_id=payload.get("observation_id"),
+                captured_at=payload.get("captured_at"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ChatNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Session not found") from exc
+        return JSONResponse(accepted, status_code=202)
+
+    @app.websocket("/ws/sessions/{session_id}")
+    async def session_socket(
+        websocket: WebSocket,
+        session_id: str,
+        after_event_number: int = -1,
+    ) -> None:
+        """Gateway bridge for live output plus durable-event replay."""
+        try:
+            store.get_chat(chat_id=session_id, user_id=user_id)
+        except ChatNotFoundError:
+            await websocket.close(code=4404)
+            return
+
+        await websocket.accept()
+        queue = app.state.orchestrator.broker.subscribe(session_id)
+        try:
+            for event in store.get_events(
+                chat_id=session_id,
+                user_id=user_id,
+                after_event_number=after_event_number,
+            ):
+                await websocket.send_json({"type": "session_event", "event": event})
+
+            async def receive_commands() -> None:
+                while True:
+                    message = await websocket.receive_json()
+                    message_type = message.get("type")
+                    if message_type == "text_observation":
+                        await app.state.orchestrator.submit_text(
+                            session_id=session_id,
+                            content=str(message.get("content", "")),
+                            source_id=str(message.get("source_id", "web")),
+                            sequence=int(message.get("sequence", 0)),
+                            observation_id=message.get("observation_id"),
+                            captured_at=message.get("captured_at"),
+                        )
+                    elif message_type == "cancel_inference":
+                        await app.state.orchestrator.cancel(session_id)
+                    else:
+                        await websocket.send_json({
+                            "type": "gateway_error",
+                            "message": f"Unsupported message type: {message_type!r}",
+                        })
+
+            receiver = asyncio.create_task(receive_commands())
+            try:
+                while True:
+                    event = await queue.get()
+                    await websocket.send_json(event)
+            finally:
+                receiver.cancel()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            app.state.orchestrator.broker.unsubscribe(session_id, queue)
 
     @app.post("/issues")
     async def create_issue(
@@ -347,6 +447,7 @@ def run_server(
     response_instruction: str,
     markers: dict[str, str] | None = None,
     thought_process_output_prefix: str | None = None,
+    full_bandwidth_feedback: bool = False,
     github_repository: str | None = None,
     github_token: str | None = None,
 ) -> None:
@@ -375,6 +476,7 @@ def run_server(
         response_instruction=response_instruction,
         markers=markers,
         thought_process_output_prefix=thought_process_output_prefix,
+        full_bandwidth_feedback=full_bandwidth_feedback,
         github_repository=github_repository,
         github_token=github_token,
     )

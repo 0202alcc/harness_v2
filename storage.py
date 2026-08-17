@@ -172,6 +172,42 @@ class ChatStorage:
             / EVENTS_FILENAME
         )
 
+    def get_events(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        after_event_number: int = -1,
+    ) -> list[dict[str, Any]]:
+        """Read durable events after a cursor, in event-number order.
+
+        This is deliberately a small replay primitive for the always-on
+        gateway.  Consumers should retain the last seen ``event_number`` and
+        reconnect with it; they must still tolerate at-least-once delivery.
+        """
+
+        with self._chat_lock(str(user_id), str(chat_id)):
+            path = self.get_events_path(str(user_id), str(chat_id))
+            if not path.exists():
+                raise ChatNotFoundError(
+                    f"Chat {chat_id} does not exist for user {user_id}"
+                )
+
+            events: list[dict[str, Any]] = []
+            with path.open("r", encoding="utf-8") as event_file:
+                for line in event_file:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise StorageCorruptionError(
+                            f"Corrupt JSONL record in {path}"
+                        ) from exc
+                    if int(event.get("event_number", -1)) > after_event_number:
+                        events.append(event)
+            return events
+
     def get_llama_io_path(
         self,
         user_id: str,

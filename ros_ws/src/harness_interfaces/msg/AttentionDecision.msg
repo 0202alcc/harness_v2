@@ -1,0 +1,9 @@
+std_msgs/Header header
+string decision_id
+string session_id
+string[] observation_ids
+string[] percept_ids
+uint8 priority
+string reason
+string context_snapshot_id
+string trace_id

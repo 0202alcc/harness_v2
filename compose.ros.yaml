@@ -1,0 +1,19 @@
+services:
+  harness-ros:
+    build:
+      context: .
+      dockerfile: Dockerfile.ros
+    ports:
+      - "8000:8000"
+    environment:
+      HARNESS_BASE_URL: ${BASE_URL:-http://host.docker.internal:8080}
+      HARNESS_API_KEY: ${API_KEY:-}
+      HARNESS_USERNAME: ${USERNAME:-}
+      HARNESS_USER_ID: ${HARNESS_USER_ID:-}
+      HARNESS_CHAT_ID: ${HARNESS_CHAT_ID:-}
+      HARNESS_MODEL: ${CHOSEN_MODEL:-}
+      HARNESS_LOG_ROOT: /workspace/.logs
+      HARNESS_CONFIG_PATH: /workspace/config.json
+    volumes:
+      - ./.logs:/workspace/.logs
+    restart: unless-stopped

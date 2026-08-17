@@ -1,0 +1,10 @@
+std_msgs/Header header
+string percept_id
+string session_id
+string observation_id
+string modality
+string kind
+float32 confidence
+string payload_json
+string trace_id
+builtin_interfaces/Time observed_at

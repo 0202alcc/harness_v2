@@ -1,0 +1,32 @@
+flowchart TD
+    Browser["HTML chat page"]
+    Server["FastAPI send endpoint<br/>SSE stream"]
+    Store["Chat storage<br/>state, events, llama traces"]
+    Llama["llama.cpp server<br/>standard transformer + KV cache"]
+
+    Browser -->|"submit user message"| Server
+    Server -->|"persist user turn"| Store
+    Server -->|"run Harness"| Harness
+
+    subgraph Harness["Harness LangGraph pipeline"]
+        Chunker["1. Token chunker"]
+        Init["2. Initialize annotation context<br/>system prompt, history, instruction"]
+        Annotate["3. Annotation loop<br/>one source chunk at a time"]
+        Thought["4. Thought-process pass"]
+        Respond["5. Final-response pass"]
+
+        Chunker --> Init --> Annotate
+        Annotate -->|"more chunks"| Annotate
+        Annotate -->|"all chunks complete"| Thought --> Respond
+    end
+
+    Store -->|"prior messages + system prompt"| Init
+    Annotate -->|"token prompt + JSON schema"| Llama
+    Thought -->|"reconstructed text prompt + JSON schema"| Llama
+    Respond -->|"chat-template prompt + JSON schema"| Llama
+    Llama -->|"visible generated tokens"| Server
+    Server -->|"live SSE events"| Browser
+
+    Annotate -->|"annotations serialized as tokens"| Thought
+    Thought -->|"thought serialized as tokens"| Respond
+    Respond -->|"persist final assistant message"| Store

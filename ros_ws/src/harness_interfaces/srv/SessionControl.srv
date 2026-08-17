@@ -1,0 +1,7 @@
+string session_id
+string command
+string reason
+---
+bool accepted
+string state
+string error

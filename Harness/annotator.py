@@ -41,6 +41,19 @@ INITIAL_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 CONTINUATION_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 
 
+def _normalise_annotation_text(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def _is_annotation_loop(piece: str, *, source_text: str, prior_annotation: str) -> bool:
+    """Detect a model echoing the source or a prior protocol envelope."""
+    candidate = _normalise_annotation_text(piece)
+    return bool(candidate) and candidate in {
+        _normalise_annotation_text(source_text),
+        _normalise_annotation_text(prior_annotation),
+    }
+
+
 class AnnotationResult(TypedDict):
     annotation: Annotation
     thinking_token_ids: list[int]
@@ -241,6 +254,47 @@ class Annotator:
                     piece, done = decoder.result()
                     if not piece:
                         raise RuntimeError("llama.cpp returned an empty annotation chunk")
+                    if _is_annotation_loop(
+                        piece,
+                        source_text=chunk["text"],
+                        prior_annotation=annotation_text,
+                    ):
+                        fallback = (
+                            "The source is the user's request; use the original "
+                            "message directly when preparing the response."
+                        )
+                        self._trace_completion(
+                            run_id=run_id, turn_id=turn_id, chunk_index=chunk["index"],
+                            prompt_tokens=request_prompt, n_predict=envelope_n_predict,
+                            attempt_kind="annotation_echo_fallback",
+                            initial_retry_index=retry_index if protocol_chunk_index == 0 else 0,
+                            continuation_retry_index=retry_index if protocol_chunk_index else 0,
+                            started_at=started_at, started_clock=started_clock,
+                            events=attempt_events, generated_tokens=attempt_tokens,
+                            generated_content="".join(attempt_content_parts), status="error",
+                            error={
+                                "type": "AnnotationEcho",
+                                "message": "Model repeated source or prior annotation text",
+                                "retryable": False,
+                            },
+                            protocol_chunk_index=protocol_chunk_index,
+                            terminal_condition="annotation_echo",
+                        )
+                        annotation_text = fallback
+                        annotation_tokens = self.llm.tokenize(
+                            fallback,
+                            model=self.model,
+                            add_special=False,
+                            parse_special=False,
+                        )
+                        if on_event is not None:
+                            on_event({
+                                "type": "annotation_replace",
+                                "chunk_index": chunk["index"],
+                                "content": fallback,
+                            })
+                        done = True
+                        break
                     self._trace_completion(
                         run_id=run_id, turn_id=turn_id, chunk_index=chunk["index"],
                         prompt_tokens=request_prompt, n_predict=envelope_n_predict,

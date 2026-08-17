@@ -213,6 +213,29 @@ def test_annotation_continues_after_a_complete_unfinished_envelope(tmp_path):
     assert len(llm.prompts) == 2
 
 
+def test_annotation_echo_uses_fallback_instead_of_looping(tmp_path):
+    annotator, llm, store = make_annotator(
+        tmp_path,
+        [[stream_event('{"chunk":"source","done":false}', 10)]],
+    )
+    events = []
+
+    result = annotator.annotate(
+        thinking_token_ids=[1],
+        chunk={"index": 0, "token_ids": [4], "text": "source"},
+        run_id="run",
+        turn_id="turn",
+        on_event=events.append,
+    )
+
+    assert result["annotation"]["text"].startswith("The source is the user's request")
+    assert len(llm.prompts) == 1
+    assert events[-2]["type"] == "annotation_replace"
+    [record] = read_trace(store)
+    assert record["status"] == "error"
+    assert record["response"]["terminal_condition"] == "annotation_echo"
+
+
 def test_incomplete_normal_stream_is_traced_as_invalid_json_then_retried(tmp_path):
     annotator, _llm, store = make_annotator(
         tmp_path,

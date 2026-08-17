@@ -75,6 +75,8 @@ def test_chat_picker_lists_existing_chats_and_creates_a_new_one(tmp_path):
     assert response.status_code == 303
     new_chat_id = parse_qs(urlparse(response.headers["location"]).query)["chat_id"][0]
     assert store.get_chat(new_chat_id, "user")["messages"] == []
+    assert store.get_events(chat_id=new_chat_id, user_id="user")[0]["event_type"] == "chat_initialized"
 
     new_chat_page = client.get(response.headers["location"])
     assert f'value="{new_chat_id}" selected' in new_chat_page.text
+    assert 'id="app-version"' in new_chat_page.text

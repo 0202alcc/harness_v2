@@ -19,6 +19,7 @@ from LLManager import LLManager
 from storage import ChatNotFoundError, ChatStorage
 from app.github_issues import format_issue_body
 from app.always_on import AlwaysOnOrchestrator
+from app.version import application_version
 
 
 templates = Jinja2Templates(
@@ -141,9 +142,9 @@ def create_app(
     # ---------------------------------------------------------
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, bool]:
+    async def healthz() -> dict[str, Any]:
         """Container readiness probe; inference-provider health is separate."""
-        return {"ok": True}
+        return {"ok": True, "version": application_version()}
 
     @app.get(
         "/",
@@ -171,6 +172,7 @@ def create_app(
                 "chat_metadata": chat_metadata(chat_data),
                 "chat_list": store.list_chats(user_id),
                 "selected_chat_id": selected_chat_id,
+                "app_version": application_version(),
                 "event_cursor": latest_event_number(
                     store, chat_id=selected_chat_id, user_id=user_id
                 ),

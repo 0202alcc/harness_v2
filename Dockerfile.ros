@@ -1,6 +1,7 @@
 FROM ros:jazzy-ros-base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG HARNESS_VERSION=0.1.0+local
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-fastapi python3-uvicorn python3-jinja2 python3-httpx \
@@ -8,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-launch ros-jazzy-launch-ros \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
-ENV PYTHONPATH=/workspace:/workspace/.venv/lib/python3.12/site-packages
+ENV PYTHONPATH=/workspace:/workspace/.venv/lib/python3.12/site-packages \
+    HARNESS_VERSION=${HARNESS_VERSION}
 COPY requirements-ros.txt ./
 RUN uv venv --system-site-packages \
     && uv pip install --python .venv/bin/python -r requirements-ros.txt

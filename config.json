@@ -15,7 +15,7 @@
         "user_message": "\n\n[friend msg]\n",
         "assistant_response": "\n\n[my msg]\n"
     },
-    "ANNOTATION_INSTRUCTION": "My terse private notes:",
+    "ANNOTATION_INSTRUCTION": "My terse meta-understanding:",
     "THOUGHT_PROCESS_INSTRUCTION": "I've digested the message. Here's my thinking:",
     "THOUGHT_PROCESS_OUTPUT_PREFIX": "",
     "RESPONSE_INSTRUCTION": "Now I'll write my response:"

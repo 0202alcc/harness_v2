@@ -87,6 +87,7 @@
         const issueSubmit = document.getElementById("issue-submit");
         const issueStatus = document.getElementById("issue-status");
         let activeUserMessage = null;
+        let activeAnnotationContent = new Map();
         let activeThoughtContent = null;
         let activeResponseContent = null;
         let observationSequence = 0;
@@ -130,12 +131,22 @@
             activeUserMessage.append(chunk);
 
             const quote = document.createElement("blockquote");
-            quote.id = `annotation-${eventData.chunk_index}`;
             const label = document.createElement("strong");
             label.textContent = `Annotation ${eventData.chunk_index + 1}`;
             const content = document.createElement("pre");
             quote.append(label, content);
             activeUserMessage.append(quote);
+            activeAnnotationContent.set(eventData.chunk_index, content);
+        }
+
+        function updateAnnotation(eventData, replace = false) {
+            const annotation = activeAnnotationContent.get(eventData.chunk_index);
+            if (!annotation) return;
+            if (replace) {
+                annotation.textContent = eventData.content;
+            } else {
+                annotation.textContent += eventData.content;
+            }
         }
 
         function startThoughtProcess() {
@@ -179,11 +190,9 @@
                 if (feedback.type === "annotation_start") {
                     appendChunkAndAnnotation(feedback);
                 } else if (feedback.type === "annotation_delta") {
-                    const annotation = document.querySelector(`#annotation-${feedback.chunk_index} pre`);
-                    if (annotation) annotation.textContent += feedback.content;
+                    updateAnnotation(feedback);
                 } else if (feedback.type === "annotation_replace") {
-                    const annotation = document.querySelector(`#annotation-${feedback.chunk_index} pre`);
-                    if (annotation) annotation.textContent = feedback.content;
+                    updateAnnotation(feedback, true);
                 } else if (feedback.type === "thought_process_start") {
                     startThoughtProcess();
                 } else if (feedback.type === "thought_process_delta") {
@@ -242,6 +251,7 @@
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
             activeUserMessage = null;
+            activeAnnotationContent = new Map();
             activeThoughtContent = null;
             activeResponseContent = null;
             result.hidden = true;
@@ -281,11 +291,9 @@
                         if (eventData.type === "annotation_start") {
                             appendChunkAndAnnotation(eventData);
                         } else if (eventData.type === "annotation_delta") {
-                            const annotation = document.querySelector(`#annotation-${eventData.chunk_index} pre`);
-                            if (annotation) annotation.textContent += eventData.content;
+                            updateAnnotation(eventData);
                         } else if (eventData.type === "annotation_replace") {
-                            const annotation = document.querySelector(`#annotation-${eventData.chunk_index} pre`);
-                            if (annotation) annotation.textContent = eventData.content;
+                            updateAnnotation(eventData, true);
                         } else if (eventData.type === "thought_process_start") {
                             startThoughtProcess();
                         } else if (eventData.type === "thought_process_delta") {

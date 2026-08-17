@@ -10,13 +10,13 @@
     "MARKERS": {
         "source_chunk": "\n\n[msg chunk]\n",
         "annotation": "\n\n[annotation]\n",
-        "accumulated_annotations": "\n\n[full annotations]\n",
+        "accumulated_annotations": "\n\n[my meta-annotations]\n",
         "thought_process": "\n\n[my reasoning]\n",
         "user_message": "\n\n[friend msg]\n",
         "assistant_response": "\n\n[my msg]\n"
     },
-    "ANNOTATION_INSTRUCTION": "I just received a message... here's my real-time thought process:",
-    "THOUGHT_PROCESS_INSTRUCTION": "Now that I've digested the message, let me think before I reply:",
-    "THOUGHT_PROCESS_OUTPUT_PREFIX": "Now that I've digested the message, let me think before I reply:",
-    "RESPONSE_INSTRUCTION": "Here's my reply:"
+    "ANNOTATION_INSTRUCTION": "My terse private notes:",
+    "THOUGHT_PROCESS_INSTRUCTION": "I've digested the message. Here's my thinking:",
+    "THOUGHT_PROCESS_OUTPUT_PREFIX": "",
+    "RESPONSE_INSTRUCTION": "Now I'll write my response:"
 }

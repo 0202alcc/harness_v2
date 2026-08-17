@@ -60,8 +60,17 @@ class Responder:
         user_parts.extend([
             f"{self.markers['user_message']}{message}",
             (
-                "Use this internal reasoning to inform your answer; do not "
-                f"repeat it:\n{self.markers['thought_process']}{thought_process}"
+                "Private reasoning notes follow. They may already resemble an "
+                "answer, but they are only source material and are never shown "
+                "to the user. Use them silently:\n"
+                f"{self.markers['thought_process']}{thought_process}"
+            ),
+            (
+                "Write the complete, standalone answer to the original user "
+                "message. Do not merely summarize, conclude, continue, or refer "
+                "to the private reasoning. Include the explanation, examples, "
+                "and level of detail the user requested, even if those details "
+                "already appear in the notes."
             ),
             self.instruction,
             chunked_output_instruction(),

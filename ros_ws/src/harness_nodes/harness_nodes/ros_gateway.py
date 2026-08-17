@@ -76,6 +76,21 @@ class RosGatewayRuntime:
                 )
             return
 
+        if output.kind == "error":
+            event = self.store.append_event(
+                chat_id=output.session_id,
+                user_id=self.user_id,
+                event_type="inference_failed",
+                turn_id=output.turn_id or None,
+                data={
+                    "run_id": output.run_id,
+                    "message": output.content,
+                    "output_id": output.output_id,
+                },
+            )
+            self._publish_event(output.session_id, event)
+            return
+
         event = self.store.append_event(
             chat_id=output.session_id,
             user_id=self.user_id,

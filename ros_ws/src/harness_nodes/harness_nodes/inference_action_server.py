@@ -88,6 +88,19 @@ class InferenceActionServer(Node):
         message.trace_id = goal.trace_id
         self._activity.publish(message)
 
+    def _publish_error(self, goal, message: str) -> None:
+        output = AssistantOutput()
+        output.output_id = str(uuid.uuid4())
+        output.session_id = goal.session_id
+        output.run_id = goal.run_id
+        output.turn_id = goal.turn_id
+        output.kind = "error"
+        output.content = message
+        output.final = True
+        output.superseded = False
+        output.trace_id = goal.trace_id
+        self._outputs.publish(output)
+
     def _execute(self, goal_handle):
         goal = goal_handle.request
         result = RunInference.Result()
@@ -173,6 +186,7 @@ class InferenceActionServer(Node):
         except Exception as exc:
             goal_handle.abort()
             result.error = str(exc)
+            self._publish_error(goal, result.error)
             self._publish_activity(goal, "error", str(exc))
             return result
 

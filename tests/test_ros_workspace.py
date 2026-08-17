@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from app.ros_migration import migrate_orphaned_sessions
+from storage import ChatStorage
 
 ROOT = Path(__file__).resolve().parents[1]
 INTERFACES = ROOT / "ros_ws/src/harness_interfaces"
@@ -27,4 +29,17 @@ def test_ros_launch_graph_and_container_entrypoint_are_present():
         assert executable in launch
     dockerfile = (ROOT / "Dockerfile.ros").read_text()
     assert "colcon build" in dockerfile
-    assert "ros2 launch harness_nodes" in dockerfile
+    startup = (ROOT / "scripts/start_ros_system.sh").read_text()
+    assert "ros2 launch harness_nodes" in startup
+
+
+def test_orphaned_ros_session_messages_are_migrated_once(tmp_path):
+    store = ChatStorage(tmp_path)
+    store.create_chat("chat", "", model="fake")
+    store.append_message(chat_id="chat", user_id="", role="user", content="hello")
+    store.append_message(chat_id="chat", user_id="", role="assistant", content="hi")
+
+    assert migrate_orphaned_sessions(log_root=str(tmp_path), user_id="real-user") == 2
+    repaired = store.get_chat("chat", "real-user")
+    assert [message["content"] for message in repaired["messages"]] == ["hello", "hi"]
+    assert migrate_orphaned_sessions(log_root=str(tmp_path), user_id="real-user") == 0

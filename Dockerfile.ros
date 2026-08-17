@@ -17,4 +17,4 @@ RUN uv venv --system-site-packages \
 COPY . .
 RUN source /opt/ros/jazzy/setup.bash && cd /workspace/ros_ws && colcon build --symlink-install
 EXPOSE 8000
-CMD ["bash", "-lc", "source /workspace/.venv/bin/activate && source /opt/ros/jazzy/setup.bash && source /workspace/ros_ws/install/setup.bash && ros2 launch harness_nodes harness_system.launch.py"]
+CMD ["bash", "/workspace/scripts/start_ros_system.sh"]

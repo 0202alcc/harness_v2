@@ -52,7 +52,8 @@ def test_response_uses_message_and_thought_without_annotation_instruction(tmp_pa
     assert "The message asks for an explanation." in llm.template_prompt
     assert "Assistant: Earlier answer" in llm.template_prompt
     assert "I just received a message" not in llm.template_prompt
-    assert "Use this internal reasoning to inform your answer; do not repeat it:" in llm.template_prompt
+    assert "Private reasoning notes follow." in llm.template_prompt
+    assert "Write the complete, standalone answer to the original user message." in llm.template_prompt
     assert llm.template_prompt.index("Now answer the user:") < llm.template_prompt.index('Return exactly one JSON object')
     assert "[my msg]" not in llm.template_prompt
     assert result["text"] == "Here is my answer."

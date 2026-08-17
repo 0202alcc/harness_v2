@@ -71,4 +71,4 @@ for _ in {1..30}; do
   sleep 1
 done
 echo "Timed out waiting for the ROS health endpoint." >&2
-exit 1
+false

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# ROS setup scripts intentionally read optional unset variables, so nounset
+# cannot be enabled while sourcing them.
+set -eo pipefail
 
 # All ROS child processes must share the same storage identity as the web
 # gateway. Legacy deployments only define USERNAME, so derive its stable hash

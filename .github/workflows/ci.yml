@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   test:
@@ -35,3 +36,28 @@ jobs:
 
       - name: Build ROS runtime image
         run: docker build --tag harness-ros:ci --file Dockerfile.ros .
+
+  open_main_promotion_pr:
+    name: Open staging promotion PR
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open a main PR when none is already pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --base main --head staging --state open --json number --jq 'length')"
+          if [ "$existing" -eq 0 ]; then
+            gh pr create \
+              --base main \
+              --head staging \
+              --title "Promote staging to main" \
+              --body "Automated promotion after successful staging CI."
+          else
+            echo "An open staging-to-main PR already exists."
+          fi

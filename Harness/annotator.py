@@ -239,8 +239,8 @@ class Annotator:
                                 on_event({"type": "annotation_delta", "chunk_index": chunk["index"], "content": decoded_content})
 
                     piece, done = decoder.result()
-                    if not done and not piece:
-                        raise RuntimeError("llama.cpp returned an empty unfinished annotation chunk")
+                    if not piece:
+                        raise RuntimeError("llama.cpp returned an empty annotation chunk")
                     self._trace_completion(
                         run_id=run_id, turn_id=turn_id, chunk_index=chunk["index"],
                         prompt_tokens=request_prompt, n_predict=envelope_n_predict,

@@ -143,8 +143,8 @@ class Responder:
                         if isinstance(event_tokens, list):
                             attempt_tokens.extend(event_tokens)
                     piece, done = decoder.result()
-                    if not done and not piece:
-                        raise RuntimeError("llama.cpp returned an empty unfinished response chunk")
+                    if not piece:
+                        raise RuntimeError("llama.cpp returned an empty response chunk")
                     response = {**(events[-1] if events else {}), "content": "".join(raw_content_parts), "tokens": attempt_tokens, "decoded_response": piece}
                     request["n_predict"] = envelope_n_predict
                     self._trace(run_id, turn_id, request, response, started_at, started_clock, "success", None, "complete")

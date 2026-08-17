@@ -75,6 +75,8 @@ def main() -> None:
         response_instruction=config["RESPONSE_INSTRUCTION"],
         markers=config.get("MARKERS"),
         thought_process_output_prefix=config.get("THOUGHT_PROCESS_OUTPUT_PREFIX"),
+        github_repository=os.environ.get("HARNESS_GITHUB_REPOSITORY"),
+        github_token=os.environ.get("HARNESS_GITHUB_TOKEN"),
     )
     app.state.orchestrator = runtime
     try:

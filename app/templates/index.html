@@ -216,6 +216,7 @@
                 result.hidden = false;
                 scrollToBottom();
             } else if (event.event_type === "inference_failed") {
+                makeRunReportable(data.run_id);
                 result.textContent = data.message || "Inference failed.";
                 result.hidden = false;
             } else if (event.event_type === "inference_discarded") {

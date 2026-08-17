@@ -161,8 +161,8 @@ class ThoughtProcessor:
                         if isinstance(tokens, list):
                             attempt_tokens.extend(tokens)
                     piece, done = decoder.result()
-                    if not done and not piece:
-                        raise RuntimeError("llama.cpp returned an empty unfinished thought-process chunk")
+                    if not piece:
+                        raise RuntimeError("llama.cpp returned an empty thought-process chunk")
                     response = {**(events[-1] if events else {}), "content": "".join(raw_content_parts), "tokens": attempt_tokens}
                     response["decoded_thought_process"] = piece
                     request["n_predict"] = envelope_n_predict

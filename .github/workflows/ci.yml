@@ -32,3 +32,6 @@ jobs:
 
       - name: Compile Python sources
         run: uv run python -m compileall -q Harness app main.py storage.py LLManager.py
+
+      - name: Build ROS runtime image
+        run: docker build --tag harness-ros:ci --file Dockerfile.ros .

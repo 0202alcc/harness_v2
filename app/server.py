@@ -140,6 +140,11 @@ def create_app(
     # Routes
     # ---------------------------------------------------------
 
+    @app.get("/healthz")
+    async def healthz() -> dict[str, bool]:
+        """Container readiness probe; inference-provider health is separate."""
+        return {"ok": True}
+
     @app.get(
         "/",
         response_class=HTMLResponse,

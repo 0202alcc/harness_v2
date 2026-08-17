@@ -1,4 +1,4 @@
-name: Deploy home server
+name: Deploy ROS runtime
 
 on:
   workflow_run:
@@ -29,37 +29,8 @@ jobs:
           cd /srv/harness_v2
           previous_sha="$(git rev-parse HEAD)"
           target_sha="${{ github.event.workflow_run.head_sha }}"
-          deployed=false
-
-          rollback() {
-            status=$?
-            if [ "$deployed" = true ]; then
-              echo "Deployment failed; restoring $previous_sha"
-              set +e
-              git checkout --detach "$previous_sha"
-              /home/harness/.local/bin/uv sync --frozen
-              sudo /usr/bin/systemctl restart harness-v2.service
-            fi
-            exit "$status"
-          }
-          trap rollback ERR
 
           git fetch --prune origin main
           git cat-file -e "${target_sha}^{commit}"
           git checkout --detach "$target_sha"
-          /home/harness/.local/bin/uv sync --frozen
-          deployed=true
-          sudo /usr/bin/systemctl restart harness-v2.service
-
-          for _ in {1..20}; do
-            if curl --fail --silent --show-error http://127.0.0.1:8000/ >/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          curl --fail --silent --show-error http://127.0.0.1:8000/ >/dev/null
-
-          set -a
-          . /srv/harness_v2/.env
-          set +a
-          curl --fail --silent --show-error "${BASE_URL%/}/health" >/dev/null
+          ./scripts/deploy_ros_compose.sh --previous-sha "$previous_sha"

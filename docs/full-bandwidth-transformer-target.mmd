@@ -1,0 +1,50 @@
+flowchart TD
+    Browser["HTML chat page"]
+    Server["FastAPI + SSE"]
+    Store["Chat storage + traces"]
+
+    Browser -->|"submit user message"| Server
+    Server -->|"persist user turn"| Store
+    Server -->|"run Harness"| Harness
+
+    subgraph Harness["Harness orchestration"]
+        Chunker["Token chunker"]
+        Init["Build context"]
+        Annotate["Annotation loop"]
+        Thought["Optional visible thought pass"]
+        Respond["Final-response pass"]
+        Capability["Capability-gated<br/>full-bandwidth request"]
+
+        Chunker --> Init --> Annotate
+        Annotate -->|"more chunks"| Annotate
+        Annotate -->|"all chunks complete"| Thought --> Respond
+        Capability --> Annotate
+        Capability --> Thought
+        Capability --> Respond
+    end
+
+    subgraph ModelServer["Feedback-capable model server"]
+        Input["Token embedding + KV cache"]
+        Fuse["Layer-0 gated fusion"]
+        Layers["Transformer layers 1…N"]
+        Logits["Vocabulary logits"]
+        Sample["Sample next token"]
+        Hidden["Previous final hidden state"]
+
+        Input --> Fuse --> Layers --> Logits --> Sample
+        Layers -->|"hₜ"| Hidden
+        Hidden -->|"full-bandwidth feedback"| Fuse
+        Sample -->|"token t+1"| Input
+    end
+
+    Annotate -->|"prompt + feedback protocol"| Input
+    Thought -->|"prompt + feedback protocol"| Input
+    Respond -->|"prompt + feedback protocol"| Input
+    Sample -->|"visible generated tokens"| Server
+    Server -->|"SSE deltas"| Browser
+    Respond -->|"final response"| Store
+
+    classDef built fill:#1f6feb,color:#ffffff,stroke:#0d419d;
+    classDef future fill:#3a3f4b,color:#ffffff,stroke:#717785;
+    class Capability,Annotate,Thought,Respond built;
+    class Input,Fuse,Layers,Logits,Sample,Hidden future;

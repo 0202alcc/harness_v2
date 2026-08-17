@@ -1,0 +1,10 @@
+std_msgs/Header header
+string output_id
+string session_id
+string run_id
+string turn_id
+string kind
+string content
+bool final
+bool superseded
+string trace_id

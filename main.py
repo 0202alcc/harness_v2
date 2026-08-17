@@ -111,6 +111,7 @@ def main(
     response_instruction: str,
     markers: dict[str, str] | None = None,
     thought_process_output_prefix: str | None = None,
+    full_bandwidth_feedback: bool = False,
     github_repository: str | None = None,
     github_token: str | None = None,
     chat_id: str | None = None,
@@ -264,6 +265,7 @@ def main(
             response_instruction=response_instruction,
             markers=markers,
             thought_process_output_prefix=thought_process_output_prefix,
+            full_bandwidth_feedback=full_bandwidth_feedback,
             github_repository=github_repository,
             github_token=github_token,
         )
@@ -344,6 +346,14 @@ if __name__ == "__main__":
         help="Username for the session.",
     )
 
+    parser.add_argument(
+        "--full-bandwidth-feedback",
+        action="store_true",
+        help=(
+            "Enable a trained feedback-capable model server. Standard llama.cpp "
+            "models reject this experimental mode."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -363,6 +373,7 @@ if __name__ == "__main__":
         response_instruction=response_instruction,
         markers=markers,
         thought_process_output_prefix=thought_process_output_prefix,
+        full_bandwidth_feedback=args.full_bandwidth_feedback,
         github_repository=env.get("HARNESS_GITHUB_REPOSITORY"),
         github_token=env.get("HARNESS_GITHUB_TOKEN"),
     )

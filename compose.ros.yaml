@@ -1,0 +1,17 @@
+services:
+  harness-ros:
+    build:
+      context: .
+      dockerfile: Dockerfile.ros
+    ports:
+      - "8000:8000"
+    environment:
+      HARNESS_BASE_URL: ${HARNESS_BASE_URL:-http://host.docker.internal:8080}
+      HARNESS_API_KEY: ${HARNESS_API_KEY:-}
+      HARNESS_USER_ID: ${HARNESS_USER_ID:?Set the existing hashed Harness user ID}
+      HARNESS_CHAT_ID: ${HARNESS_CHAT_ID:?Set an existing chat ID}
+      HARNESS_MODEL: ${HARNESS_MODEL:?Set the llama.cpp model ID}
+      HARNESS_LOG_ROOT: /workspace/.logs
+      HARNESS_CONFIG_PATH: /workspace/config.json
+    volumes:
+      - ./.logs:/workspace/.logs

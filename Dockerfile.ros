@@ -1,0 +1,18 @@
+FROM ros:jazzy-ros-base
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-fastapi python3-uvicorn python3-jinja2 python3-httpx \
+    ros-jazzy-rclpy ros-jazzy-std-msgs ros-jazzy-lifecycle-msgs ros-jazzy-rosidl-default-generators \
+    ros-jazzy-launch ros-jazzy-launch-ros \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /workspace
+ENV PYTHONPATH=/workspace:/workspace/.venv/lib/python3.12/site-packages
+COPY requirements-ros.txt ./
+RUN uv venv --system-site-packages \
+    && uv pip install --python .venv/bin/python -r requirements-ros.txt
+COPY . .
+RUN source /opt/ros/jazzy/setup.bash && cd /workspace/ros_ws && colcon build --symlink-install
+EXPOSE 8000
+CMD ["bash", "-lc", "source /workspace/.venv/bin/activate && source /opt/ros/jazzy/setup.bash && source /workspace/ros_ws/install/setup.bash && ros2 launch harness_nodes harness_system.launch.py"]

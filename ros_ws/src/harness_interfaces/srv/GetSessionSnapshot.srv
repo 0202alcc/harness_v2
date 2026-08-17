@@ -1,0 +1,6 @@
+string session_id
+---
+bool found
+string snapshot_id
+string snapshot_json
+string error

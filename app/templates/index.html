@@ -88,6 +88,9 @@
         let activeUserMessage = null;
         let activeThoughtContent = null;
         let activeResponseContent = null;
+        let observationSequence = 0;
+        let eventCursor = {{ event_cursor }};
+        let sessionSocket = null;
 
         function makeRunReportable(runId) {
             if (!runId) return;
@@ -169,6 +172,71 @@
             activeResponseContent.textContent += text;
         }
 
+        function handleAlwaysOnEvent(eventData) {
+            if (eventData.type === "inference_feedback") {
+                const feedback = eventData.event;
+                if (feedback.type === "annotation_start") {
+                    appendChunkAndAnnotation(feedback);
+                } else if (feedback.type === "annotation_delta") {
+                    const annotation = document.querySelector(`#annotation-${feedback.chunk_index} pre`);
+                    if (annotation) annotation.textContent += feedback.content;
+                } else if (feedback.type === "annotation_replace") {
+                    const annotation = document.querySelector(`#annotation-${feedback.chunk_index} pre`);
+                    if (annotation) annotation.textContent = feedback.content;
+                } else if (feedback.type === "thought_process_start") {
+                    startThoughtProcess();
+                } else if (feedback.type === "thought_process_delta") {
+                    appendThoughtProcess(feedback.content);
+                } else if (feedback.type === "thought_process_replace") {
+                    if (!activeThoughtContent) startThoughtProcess();
+                    activeThoughtContent.textContent = feedback.content;
+                } else if (feedback.type === "response_start") {
+                    startAssistantResponse();
+                } else if (feedback.type === "response_delta") {
+                    appendAssistantResponse(feedback.content);
+                } else if (feedback.type === "response_replace") {
+                    if (!activeResponseContent) startAssistantResponse();
+                    activeResponseContent.textContent = feedback.content;
+                } else if (feedback.type === "response_complete") {
+                    if (!activeResponseContent) appendAssistantResponse(feedback.text);
+                    scrollToBottom();
+                }
+                return;
+            }
+
+            if (eventData.type !== "session_event") return;
+            const event = eventData.event;
+            eventCursor = Math.max(eventCursor, event.event_number ?? eventCursor);
+            const data = event.changes?.[0]?.data || {};
+            if (event.event_type === "inference_completed") {
+                makeRunReportable(data.run_id);
+                if (!activeResponseContent) appendAssistantResponse(data.response || "");
+                result.textContent = "Response completed.";
+                result.hidden = false;
+                scrollToBottom();
+            } else if (event.event_type === "inference_failed") {
+                result.textContent = data.message || "Inference failed.";
+                result.hidden = false;
+            } else if (event.event_type === "inference_discarded") {
+                result.textContent = "A previous response was superseded by newer input.";
+                result.hidden = false;
+            }
+        }
+
+        function connectSessionSocket() {
+            const scheme = location.protocol === "https:" ? "wss" : "ws";
+            const sessionId = {{ selected_chat_id | tojson }};
+            sessionSocket = new WebSocket(
+                `${scheme}://${location.host}/ws/sessions/${sessionId}?after_event_number=${eventCursor}`
+            );
+            sessionSocket.onmessage = (message) => handleAlwaysOnEvent(JSON.parse(message.data));
+            sessionSocket.onclose = () => {
+                window.setTimeout(connectSessionSocket, 1000);
+            };
+        }
+
+        connectSessionSocket();
+
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
             activeUserMessage = null;
@@ -181,6 +249,15 @@
             form.elements.message.value = "";
 
             try {
+                if (sessionSocket && sessionSocket.readyState === WebSocket.OPEN) {
+                    sessionSocket.send(JSON.stringify({
+                        type: "text_observation",
+                        content: formData.get("message"),
+                        source_id: "web",
+                        sequence: ++observationSequence,
+                    }));
+                    return;
+                }
                 const response = await fetch("/send", {
                     method: "POST",
                     body: formData,

@@ -1,0 +1,19 @@
+string session_id
+string run_id
+string turn_id
+string context_snapshot_id
+string[] observation_ids
+string input_text
+string trace_id
+builtin_interfaces/Duration deadline
+---
+bool completed
+bool superseded
+string response
+string output_id
+string error
+---
+string phase
+string content_delta
+uint32 completed_steps
+uint32 total_steps
